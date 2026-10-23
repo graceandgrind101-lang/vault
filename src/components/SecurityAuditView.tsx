@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ShieldCheck,
   AlertTriangle,
@@ -16,6 +16,8 @@ import {
   Copy,
   Loader2,
   EyeOff,
+  LogOut,
+  UserCheck,
 } from 'lucide-react';
 import { AccountRecord, SupportedLanguage, VaultSecurityConfig } from '../types/account';
 import { auditPinStrength } from '../utils/validator';
@@ -28,6 +30,13 @@ import {
   registerBiometricPasskey,
   clearBiometricPasskey,
 } from '../utils/crypto';
+import {
+  auth,
+  onAuthStateChanged,
+  signInWithGoogleForVault,
+  signOutFromVaultCloud,
+  User,
+} from '../firebase';
 
 interface SecurityAuditViewProps {
   accounts: AccountRecord[];
@@ -58,12 +67,24 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
   const [backupPassphraseInput, setBackupPassphraseInput] = useState('');
   const [isRestoring, setIsRestoring] = useState(false);
 
-  // Cloud Sync State
+  // Cloud Sync & Firebase Auth State
   const [syncIdInput, setSyncIdInput] = useState(securityConfig.syncVaultId || '');
   const [syncPassphraseInput, setSyncPassphraseInput] = useState('');
   const [showSyncPullPrompt, setShowSyncPullPrompt] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(auth.currentUser);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+      if (user && !syncIdInput) {
+        const defaultChannel = `vault-${user.uid.slice(0, 12).toLowerCase()}`;
+        setSyncIdInput(defaultChannel);
+      }
+    });
+    return () => unsub();
+  }, [syncIdInput]);
 
   // Quick PIN & Biometrics Enrollment State
   const [pinConfigured, setPinConfigured] = useState(hasQuickPinConfigured());
@@ -153,6 +174,22 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
     }
   };
 
+  const handleGoogleSignIn = async () => {
+    try {
+      const user = await signInWithGoogleForVault();
+      const channel = `vault-${user.uid.slice(0, 12).toLowerCase()}`;
+      if (!syncIdInput) setSyncIdInput(channel);
+      setSyncFeedback(`Signed in as ${user.email}. Ready for permanent Firestore Cloud Sync!`);
+    } catch (err: any) {
+      setSyncFeedback(err.message || 'Google Sign-In cancelled.');
+    }
+  };
+
+  const handleGoogleSignOut = async () => {
+    await signOutFromVaultCloud();
+    setSyncFeedback('Signed out of Google Cloud session.');
+  };
+
   const handleCloudPush = async () => {
     if (!syncIdInput || syncIdInput.trim().length < 6) {
       setSyncFeedback('Choose a Sync Vault ID of at least 6 characters.');
@@ -163,7 +200,7 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
     try {
       const ok = await onPushCloudSync(syncIdInput.trim());
       if (ok) {
-        setSyncFeedback('Zero-knowledge encrypted snapshot synced to cloud!');
+        setSyncFeedback('Zero-knowledge AES-256-GCM snapshot permanently saved to Firebase Firestore!');
       } else {
         setSyncFeedback('Cloud sync failed. Ensure vault is unlocked.');
       }
@@ -186,7 +223,7 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
         syncPassphraseInput ? syncPassphraseInput : undefined
       );
       if (ok) {
-        setSyncFeedback('Cloud vault decrypted and restored locally!');
+        setSyncFeedback('Cloud vault pulled from Firebase Firestore, decrypted, and restored!');
         setShowSyncPullPrompt(false);
         setSyncPassphraseInput('');
       } else {
@@ -331,25 +368,74 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
         </div>
       )}
 
-      {/* ================= ZERO-KNOWLEDGE ENCRYPTED CLOUD SYNC ================= */}
+      {/* ================= ZERO-KNOWLEDGE ENCRYPTED CLOUD SYNC (FIREBASE FIRESTORE) ================= */}
       <div className="p-5 rounded-2xl bg-[#0c1220] border border-slate-800 space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <CloudUpload className="w-4 h-4 text-emerald-400" />
             <h4 className="text-xs font-bold text-slate-200 font-mono">
-              Zero-Knowledge Cloud Backup & Sync
+              Permanent Cloud Sync (Firebase Firestore AES-256-GCM)
             </h4>
           </div>
-          {securityConfig.lastSyncedAt && (
-            <span className="text-[10px] font-mono text-slate-400">
-              Last synced: {new Date(securityConfig.lastSyncedAt).toLocaleTimeString()}
+          <div className="flex items-center gap-2">
+            <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-mono text-emerald-300">
+              Firestore Active
             </span>
-          )}
+            {securityConfig.lastSyncedAt && (
+              <span className="text-[10px] font-mono text-slate-400">
+                Last synced: {new Date(securityConfig.lastSyncedAt).toLocaleTimeString()}
+              </span>
+            )}
+          </div>
         </div>
 
         <p className="text-xs text-slate-400">
-          Sync your AES-256-GCM encrypted vault across devices using a private Sync Vault ID. The relay server only stores unreadable ciphertext—only your Master Passphrase can decrypt it.
+          Your encrypted vault (Accounts, Cards, API Keys &amp; Secrets, and Ledger) is backed by permanent <strong>Firebase Firestore</strong> storage. Only AES-256-GCM ciphertext is stored in the cloud—your Master Passphrase never leaves your device.
         </p>
+
+        {/* Optional Google Account Identity Binding */}
+        <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs">
+            <UserCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+            {firebaseUser ? (
+              <div>
+                <p className="font-semibold text-slate-200">
+                  Linked Google Cloud Identity: <span className="text-emerald-400">{firebaseUser.email}</span>
+                </p>
+                <p className="text-[10px] text-slate-400 font-mono">
+                  UID Vault: /user_vaults/{firebaseUser.uid.slice(0, 10)}...
+                </p>
+              </div>
+            ) : (
+              <div>
+                <p className="font-semibold text-slate-200">Optional: Bind to Google Account</p>
+                <p className="text-[10px] text-slate-400">
+                  Sign in with Google to bind your encrypted Firestore backup to your verified Google UID
+                </p>
+              </div>
+            )}
+          </div>
+
+          {firebaseUser ? (
+            <button
+              type="button"
+              onClick={handleGoogleSignOut}
+              className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[11px] font-medium text-slate-300 flex items-center gap-1.5"
+            >
+              <LogOut className="w-3.5 h-3.5 text-rose-400" />
+              <span>Sign Out</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleGoogleSignIn}
+              className="px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-[11px] font-semibold text-emerald-300 flex items-center gap-1.5"
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Connect Google Account</span>
+            </button>
+          )}
+        </div>
 
         <div className="flex flex-col sm:flex-row gap-2.5">
           <input
@@ -371,7 +457,7 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
               ) : (
                 <CloudUpload className="w-4 h-4" />
               )}
-              <span>Push Sync</span>
+              <span>Push to Firestore</span>
             </button>
             <button
               type="button"
@@ -380,7 +466,7 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
               className="h-11 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
             >
               <CloudDownload className="w-4 h-4 text-cyan-400" />
-              <span>Pull Restore</span>
+              <span>Pull from Firestore</span>
             </button>
           </div>
         </div>

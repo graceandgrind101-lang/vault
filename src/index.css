@@ -1,7 +1,129 @@
 @import "tailwindcss";
 
+html,
 body {
   font-family: 'Plus Jakarta Sans', 'Noto Sans Ethiopic', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
+/* ============================================================================
+   PURE CSS LIGHT THEME OVERRIDES (.theme-light)
+   Strictly modifies colors & borders ONLY — never applies CSS filter/transform
+   on root containers so position: fixed (BottomNavigation, Modals, Privacy
+   Shield) stays locked to the viewport at all times.
+   ============================================================================ */
+.theme-light {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+.theme-light header,
+.theme-light nav.fixed {
+  background-color: rgba(255, 255, 255, 0.94) !important;
+  border-color: #cbd5e1 !important;
+}
+
+.theme-light .bg-\[\#070b14\]\/90,
+.theme-light .bg-\[\#070b14\]\/95 {
+  background-color: rgba(241, 245, 249, 0.92) !important;
+}
+
+.theme-light aside,
+.theme-light .bg-\[\#0c1220\],
+.theme-light .bg-\[\#0b111e\],
+.theme-light .bg-\[\#0d1424\],
+.theme-light .bg-\[\#0f172a\] {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  box-shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.06) !important;
+}
+
+.theme-light .from-slate-900 {
+  --tw-gradient-from: #ffffff !important;
+  --tw-gradient-via: #f8fafc !important;
+  --tw-gradient-to: #f1f5f9 !important;
+  background-image: linear-gradient(to bottom right, #ffffff, #f8fafc) !important;
+  border-color: #cbd5e1 !important;
+}
+
+.theme-light .bg-slate-900,
+.theme-light .bg-slate-900\/90,
+.theme-light .bg-slate-900\/80,
+.theme-light .bg-slate-900\/60,
+.theme-light .bg-slate-900\/40,
+.theme-light .bg-slate-900\/30 {
+  background-color: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+}
+
+.theme-light .bg-slate-950,
+.theme-light .bg-slate-950\/90,
+.theme-light .bg-slate-950\/70,
+.theme-light .bg-slate-950\/60 {
+  background-color: #f1f5f9 !important;
+  border-color: #cbd5e1 !important;
+}
+
+.theme-light .bg-slate-800,
+.theme-light .bg-slate-800\/80 {
+  background-color: #e2e8f0 !important;
+  border-color: #cbd5e1 !important;
+}
+
+.theme-light .border-slate-800,
+.theme-light .border-slate-800\/90,
+.theme-light .border-slate-800\/80,
+.theme-light .border-slate-700,
+.theme-light .border-slate-700\/80 {
+  border-color: #cbd5e1 !important;
+}
+
+.theme-light .divide-slate-800\/70 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #e2e8f0 !important;
+}
+
+/* Text color mapping in Light Theme (excluding 3D VirtualCard which stays dark/metallic) */
+.theme-light .text-slate-100 {
+  color: #0f172a !important;
+}
+
+.theme-light .text-slate-200 {
+  color: #1e293b !important;
+}
+
+.theme-light .text-slate-300 {
+  color: #334155 !important;
+}
+
+.theme-light .text-slate-400,
+.theme-light .text-slate-500 {
+  color: #475569 !important;
+}
+
+.theme-light .text-emerald-400,
+.theme-light .text-emerald-300 {
+  color: #047857 !important;
+}
+
+.theme-light .text-amber-300,
+.theme-light .text-amber-200 {
+  color: #b45309 !important;
+}
+
+.theme-light .text-cyan-400 {
+  color: #0369a1 !important;
+}
+
+/* Preserve crisp white typography inside 3D VirtualCard & emerald CTA buttons */
+.theme-light .perspective-1000 .text-slate-100,
+.theme-light .perspective-1000 .text-slate-200,
+.theme-light .perspective-1000 .text-slate-300 {
+  color: #f8fafc !important;
+}
+
+.theme-light .perspective-1000 .text-slate-400 {
+  color: #cbd5e1 !important;
 }
 
 @layer utilities {

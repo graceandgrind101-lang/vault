@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Shield,
   Eye,
@@ -12,11 +12,15 @@ import {
   Camera,
   Loader2,
   PhoneCall,
+  Plus,
+  X,
+  Check,
 } from 'lucide-react';
 import { AccountRecord, SupportedLanguage } from '../types/account';
 import { validateAccountInput, parseRawAccountSnippet, detectCardNetwork } from '../utils/validator';
 import { BottomSheet } from './BottomSheet';
 import { translations } from '../utils/i18n';
+import { resolveApiUrl } from '../firebase';
 
 interface AccountFormModalProps {
   isOpen: boolean;
@@ -26,13 +30,95 @@ interface AccountFormModalProps {
   currentLanguage: SupportedLanguage;
 }
 
+interface InstitutionPreset {
+  name: string;
+  shortCode: string;
+  category: 'Bank' | 'Wallet' | 'MFI / Gateway';
+  ussd?: string;
+  app?: string;
+}
+
+const CUSTOM_BANKS_STORAGE_KEY = 'krypton_custom_institutions_v1';
+
+// Top 50+ Ethiopian Banks, Microfinance Institutions, Payment Gateways & Mobile Wallets
+const ETHIOPIAN_FINANCIAL_INSTITUTIONS: InstitutionPreset[] = [
+  // Major Commercial & Private Banks
+  { name: 'Commercial Bank of Ethiopia (CBE)', shortCode: 'CBE', category: 'Bank', ussd: '*889#', app: 'CBE Mobile / CBEBirr' },
+  { name: 'Bank of Abyssinia (BoA)', shortCode: 'BOA', category: 'Bank', ussd: '*815#', app: 'BoA Mobile / Apollo' },
+  { name: 'Awash Bank', shortCode: 'AWASH', category: 'Bank', ussd: '*901#', app: 'AwashBirr Pro' },
+  { name: 'Dashen Bank', shortCode: 'DASHEN', category: 'Bank', ussd: '*805#', app: 'Dashen SuperApp / Amole' },
+  { name: 'Cooperative Bank of Oromia (Coopbank)', shortCode: 'COOP', category: 'Bank', ussd: '*847#', app: 'CoopApp / Coopay-Ebirr' },
+  { name: 'Nib International Bank (NIB)', shortCode: 'NIB', category: 'Bank', ussd: '*855#', app: 'NIBTerara / Mobile' },
+  { name: 'Hibret Bank (United Bank)', shortCode: 'HIBRET', category: 'Bank', ussd: '*811#', app: 'Hibir Mobile' },
+  { name: 'Wegagen Bank', shortCode: 'WEGAGEN', category: 'Bank', ussd: '*866#', app: 'Wegagen Mobile' },
+  { name: 'Oromia Bank', shortCode: 'OB', category: 'Bank', ussd: '*877#', app: 'Oromia Mobile' },
+  { name: 'Zemen Bank', shortCode: 'ZEMEN', category: 'Bank', ussd: '*844#', app: 'Zemen OmniChannel' },
+  { name: 'Bunna Bank', shortCode: 'BUNNA', category: 'Bank', ussd: '*858#', app: 'Bunna Mobile' },
+  { name: 'Berhan Bank', shortCode: 'BERHAN', category: 'Bank', ussd: '*881#', app: 'Berhan Mobile' },
+  { name: 'Abay Bank', shortCode: 'ABAY', category: 'Bank', ussd: '*812#', app: 'Abay Mobile' },
+  { name: 'Lion International Bank (Anbessa)', shortCode: 'LIB', category: 'Bank', ussd: '*803#', app: 'Anbessa / HelloCash' },
+  { name: 'Addis International Bank (AdIB)', shortCode: 'ADIB', category: 'Bank', ussd: '*871#', app: 'AdIB Mobile' },
+  { name: 'Enat Bank', shortCode: 'ENAT', category: 'Bank', ussd: '*851#', app: 'Enat Mobile' },
+  { name: 'Global Bank Ethiopia (Debub Global)', shortCode: 'GBE', category: 'Bank', ussd: '*834#', app: 'Global Bank Mobile' },
+  { name: 'Amhara Bank (ABa)', shortCode: 'ABA', category: 'Bank', ussd: '*645#', app: 'ABa Mobile' },
+  { name: 'Tsehay Bank', shortCode: 'TSEHAY', category: 'Bank', ussd: '*693#', app: 'Tsehay Mobile' },
+  { name: 'Siinqee Bank', shortCode: 'SIINQEE', category: 'Bank', ussd: '*872#', app: 'Siinqee Mobile' },
+  { name: 'Ahadu Bank', shortCode: 'AHADU', category: 'Bank', ussd: '*656#', app: 'Ahadu Mobile' },
+  { name: 'Goh Betoch Bank', shortCode: 'GOH', category: 'Bank', ussd: '*662#', app: 'Goh Mobile' },
+  { name: 'Tsedey Bank', shortCode: 'TSEDEY', category: 'Bank', ussd: '*969#', app: 'Tsedey Mobile' },
+  { name: 'ZamZam Bank (Interest-Free)', shortCode: 'ZAMZAM', category: 'Bank', ussd: '*933#', app: 'ZamZam Mobile' },
+  { name: 'Hijra Bank (Interest-Free)', shortCode: 'HIJRA', category: 'Bank', ussd: '*922#', app: 'HalalPay / Hijra Mobile' },
+  { name: 'Rammis Bank (Interest-Free)', shortCode: 'RAMMIS', category: 'Bank', ussd: '*678#', app: 'Rammis Mobile' },
+  { name: 'Shabelle Bank', shortCode: 'SHABELLE', category: 'Bank', ussd: '*896#', app: 'Shabelle / HelloCash' },
+  { name: 'Gadaa Bank', shortCode: 'GADAA', category: 'Bank', ussd: '*642#', app: 'Gadaa Mobile' },
+  { name: 'Omo Bank', shortCode: 'OMO', category: 'Bank', ussd: '*859#', app: 'Omo Bank Mobile' },
+  { name: 'Sidama Bank', shortCode: 'SIDAMA', category: 'Bank', ussd: '*635#', app: 'Sidama Mobile' },
+  { name: 'Siket Bank', shortCode: 'SIKET', category: 'Bank', ussd: '*681#', app: 'Siket Mobile' },
+  { name: 'Development Bank of Ethiopia (DBE)', shortCode: 'DBE', category: 'Bank' },
+  { name: 'National Bank of Ethiopia (NBE)', shortCode: 'NBE', category: 'Bank' },
+
+  // Mobile Wallets & SuperApps
+  { name: 'Telebirr (Ethio Telecom Wallet)', shortCode: 'TELEBIRR', category: 'Wallet', ussd: '*127#', app: 'Telebirr SuperApp' },
+  { name: 'M-Pesa Ethiopia (Safaricom Wallet)', shortCode: 'MPESA', category: 'Wallet', ussd: '*733#', app: 'M-Pesa Safaricom' },
+  { name: 'CBEBirr Digital Wallet', shortCode: 'CBEBIRR', category: 'Wallet', ussd: '*847#', app: 'CBEBirr Plus' },
+  { name: 'Amole Digital Wallet (Dashen)', shortCode: 'AMOLE', category: 'Wallet', ussd: '*996#', app: 'Amole / Dashen SuperApp' },
+  { name: 'Coopay-Ebirr Wallet', shortCode: 'COOPAY', category: 'Wallet', ussd: '*847#', app: 'Coopay-Ebirr' },
+  { name: 'E-Birr Mobile Wallet', shortCode: 'EBIRR', category: 'Wallet', ussd: '*847#', app: 'E-Birr App' },
+  { name: 'HelloCash Mobile Money', shortCode: 'HELLOCASH', category: 'Wallet', ussd: '*803#', app: 'HelloCash' },
+  { name: 'Kacha Digital Financial Services (Wallet)', shortCode: 'KACHA', category: 'Wallet', ussd: '*677#', app: 'Kacha Wallet' },
+  { name: 'Yaya Wallet', shortCode: 'YAYA', category: 'Wallet', ussd: '*949#', app: 'Yaya Wallet' },
+  { name: 'AwashBirr Wallet', shortCode: 'AWASHBIRR', category: 'Wallet', ussd: '*901#', app: 'AwashBirr Pro' },
+  { name: 'HalalPay (Hijra Wallet)', shortCode: 'HALALPAY', category: 'Wallet', ussd: '*922#', app: 'HalalPay' },
+  { name: 'Apollo Digital (Bank of Abyssinia)', shortCode: 'APOLLO', category: 'Wallet', ussd: '*815#', app: 'Apollo by BoA' },
+
+  // Payment Gateways & Microfinance Institutions (MFIs)
+  { name: 'Chapa Financial Technologies', shortCode: 'CHAPA', category: 'MFI / Gateway', app: 'Chapa Merchant' },
+  { name: 'ArifPay Payment Gateway', shortCode: 'ARIFPAY', category: 'MFI / Gateway', app: 'ArifPay' },
+  { name: 'SantimPay Digital Payment', shortCode: 'SANTIMPAY', category: 'MFI / Gateway', app: 'SantimPay' },
+  { name: 'LakiPay Ethiopia', shortCode: 'LAKIPAY', category: 'MFI / Gateway', app: 'LakiPay' },
+  { name: 'VisionFund Microfinance (MFI)', shortCode: 'VISIONFUND', category: 'MFI / Gateway' },
+  { name: 'Dedebit Credit & Saving Institution (DECSI)', shortCode: 'DECSI', category: 'MFI / Gateway' },
+  { name: 'Rays Microfinance Institution', shortCode: 'RAYS', category: 'MFI / Gateway' },
+  { name: 'Peace Microfinance Institution', shortCode: 'PEACE', category: 'MFI / Gateway' },
+  { name: 'Wasasa Microfinance Institution', shortCode: 'WASASA', category: 'MFI / Gateway' },
+  { name: 'Eshet Microfinance Institution', shortCode: 'ESHET', category: 'MFI / Gateway' },
+];
+
 const ETHIOPIAN_USSD_PRESETS = [
   { label: 'CBE (*889#)', code: '*889#', app: 'CBE Birr / Mobile' },
   { label: 'Abyssinia (*815#)', code: '*815#', app: 'BoA Apollo / Mobile' },
   { label: 'Telebirr (*127#)', code: '*127#', app: 'Telebirr SuperApp' },
+  { label: 'M-Pesa (*733#)', code: '*733#', app: 'M-Pesa Safaricom' },
   { label: 'Awash (*901#)', code: '*901#', app: 'AwashBirr Pro' },
   { label: 'Dashen (*805#)', code: '*805#', app: 'Amole / Dashen SuperApp' },
   { label: 'Coopbank (*847#)', code: '*847#', app: 'Coopay-Ebirr' },
+  { label: 'Nib (*855#)', code: '*855#', app: 'NIBTerara' },
+  { label: 'Hibret (*811#)', code: '*811#', app: 'Hibir Mobile' },
+  { label: 'Wegagen (*866#)', code: '*866#', app: 'Wegagen Mobile' },
+  { label: 'Oromia (*877#)', code: '*877#', app: 'Oromia Mobile' },
+  { label: 'Zemen (*844#)', code: '*844#', app: 'Zemen OmniChannel' },
+  { label: 'Amhara (*645#)', code: '*645#', app: 'ABa Mobile' },
+  { label: 'Abay (*812#)', code: '*812#', app: 'Abay Mobile' },
 ];
 
 export const AccountFormModal: React.FC<AccountFormModalProps> = ({
@@ -52,7 +138,20 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
   const [currency, setCurrency] = useState('ETB');
   const [language, setLanguage] = useState<SupportedLanguage>(currentLanguage);
   const [memo, setMemo] = useState('');
-  const [currentBalance, setCurrentBalance] = useState<number>(0);
+  // Store balance as a clean string in the input so typing '58' never writes '058'
+  const [balanceInput, setBalanceInput] = useState<string>('');
+
+  // Custom Banks / Wallets saved by the user
+  const [customInstitutions, setCustomInstitutions] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(CUSTOM_BANKS_STORAGE_KEY);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [showOrgSuggestions, setShowOrgSuggestions] = useState(false);
+  const [customSavedNotice, setCustomSavedNotice] = useState(false);
 
   // ATM Module state
   const [hasAtm, setHasAtm] = useState(false);
@@ -96,7 +195,11 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
       setCurrency(initialAccount.currency || 'ETB');
       setLanguage(initialAccount.language || currentLanguage);
       setMemo(initialAccount.memo || '');
-      setCurrentBalance(initialAccount.currentBalance || 0);
+      setBalanceInput(
+        initialAccount.currentBalance && initialAccount.currentBalance !== 0
+          ? String(initialAccount.currentBalance)
+          : ''
+      );
 
       setHasAtm(initialAccount.atm?.hasAtm || false);
       setAtmNumber(initialAccount.atm?.atmNumber || '');
@@ -126,7 +229,7 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
     setCurrency('ETB');
     setLanguage(currentLanguage);
     setMemo('');
-    setCurrentBalance(0);
+    setBalanceInput('');
     setHasAtm(false);
     setAtmNumber('');
     setCvv('');
@@ -143,7 +246,127 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
     setShowSmartPaste(false);
     setRawPasteText('');
     setPasteNotice(null);
+    setShowOrgSuggestions(false);
     setErrors({});
+  };
+
+  // Combined suggestions (Custom saved banks + Top 55 Ethiopian Banks, Wallets & MFIs)
+  const filteredInstitutionSuggestions = useMemo(() => {
+    const query = orgName.trim().toLowerCase();
+    const customPresets: InstitutionPreset[] = customInstitutions.map((c) => ({
+      name: c,
+      shortCode: 'CUSTOM',
+      category: 'Bank',
+    }));
+    const all = [...customPresets, ...ETHIOPIAN_FINANCIAL_INSTITUTIONS];
+
+    if (!query) {
+      return all.slice(0, 12);
+    }
+    return all
+      .filter(
+        (item) =>
+          item.name.toLowerCase().includes(query) ||
+          item.shortCode.toLowerCase().includes(query) ||
+          item.category.toLowerCase().includes(query) ||
+          (item.ussd && item.ussd.includes(query))
+      )
+      .slice(0, 12);
+  }, [orgName, customInstitutions]);
+
+  const isExactInstitutionMatch = useMemo(() => {
+    const clean = orgName.trim().toLowerCase();
+    if (!clean) return true;
+    const inBuiltIn = ETHIOPIAN_FINANCIAL_INSTITUTIONS.some(
+      (i) => i.name.toLowerCase() === clean || i.shortCode.toLowerCase() === clean
+    );
+    const inCustom = customInstitutions.some((c) => c.toLowerCase() === clean);
+    return inBuiltIn || inCustom;
+  }, [orgName, customInstitutions]);
+
+  const handleSaveCustomInstitution = (customName: string) => {
+    const trimmed = customName.trim();
+    if (!trimmed) return;
+    if (customInstitutions.some((c) => c.toLowerCase() === trimmed.toLowerCase())) return;
+    const updated = [trimmed, ...customInstitutions];
+    setCustomInstitutions(updated);
+    localStorage.setItem(CUSTOM_BANKS_STORAGE_KEY, JSON.stringify(updated));
+    setCustomSavedNotice(true);
+    setTimeout(() => setCustomSavedNotice(false), 2500);
+  };
+
+  const handleRemoveCustomInstitution = (customName: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const updated = customInstitutions.filter((c) => c !== customName);
+    setCustomInstitutions(updated);
+    localStorage.setItem(CUSTOM_BANKS_STORAGE_KEY, JSON.stringify(updated));
+  };
+
+  const handleSelectInstitutionPreset = (preset: InstitutionPreset) => {
+    setOrgName(preset.name);
+    if (preset.ussd && !ussdCode) {
+      setUssdCode(preset.ussd);
+    }
+    if (preset.app && !appIdentifier) {
+      setAppIdentifier(preset.app);
+    }
+    setShowOrgSuggestions(false);
+  };
+
+  // Auto-slash Expiry (MM/YY) handler: automatically inserts '/' after typing 2 month digits
+  const handleExpiryChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const rawVal = e.target.value;
+    const isDeleting = rawVal.length < expiry.length;
+    const digits = rawVal.replace(/\D/g, '').slice(0, 4);
+
+    if (isDeleting) {
+      // If user hit backspace right after the auto-inserted '/', remove the 2nd digit too
+      if (expiry.endsWith('/') && !rawVal.endsWith('/')) {
+        setExpiry(digits.slice(0, 1));
+      } else if (digits.length > 2) {
+        setExpiry(`${digits.slice(0, 2)}/${digits.slice(2)}`);
+      } else {
+        setExpiry(digits);
+      }
+      return;
+    }
+
+    if (digits.length === 0) {
+      setExpiry('');
+    } else if (digits.length === 1) {
+      // If user types 2-9 as first month digit (e.g. '4' for April), keep it as '4' until 2nd digit or let them type 2 digits
+      setExpiry(digits);
+    } else if (digits.length === 2) {
+      let month = parseInt(digits, 10);
+      if (month > 12) month = 12;
+      if (month === 0) month = 1;
+      const paddedMonth = String(month).padStart(2, '0');
+      setExpiry(`${paddedMonth}/`);
+    } else {
+      let month = parseInt(digits.slice(0, 2), 10);
+      if (month > 12) month = 12;
+      if (month === 0) month = 1;
+      const paddedMonth = String(month).padStart(2, '0');
+      setExpiry(`${paddedMonth}/${digits.slice(2, 4)}`);
+    }
+  };
+
+  // Clean Balance Input handler: strips leading zeros so typing '58' never shows '058'
+  const handleBalanceInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    let val = e.target.value;
+    if (val === '') {
+      setBalanceInput('');
+      return;
+    }
+    // Allow digits and at most one decimal point
+    val = val.replace(/[^0-9.]/g, '');
+    const parts = val.split('.');
+    if (parts.length > 2) {
+      val = `${parts[0]}.${parts.slice(1).join('')}`;
+    }
+    // Strip leading zeros before another digit (e.g. "058" -> "58", while preserving "0.5")
+    val = val.replace(/^0+(?=\d)/, '');
+    setBalanceInput(val);
   };
 
   const handleSmartParse = () => {
@@ -154,7 +377,9 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
     if (parsed.phoneNumber) setPhoneNumber(parsed.phoneNumber);
     if (parsed.orgName) setOrgName(parsed.orgName);
     if (parsed.currency) setCurrency(parsed.currency);
-    if (parsed.currentBalance !== undefined) setCurrentBalance(parsed.currentBalance);
+    if (parsed.currentBalance !== undefined) {
+      setBalanceInput(parsed.currentBalance > 0 ? String(parsed.currentBalance) : '');
+    }
 
     if (parsed.atm?.hasAtm) {
       setHasAtm(true);
@@ -188,7 +413,7 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
         reader.readAsDataURL(file);
       });
 
-      const res = await fetch('/api/ai/scan-document', {
+      const res = await fetch(resolveApiUrl('/api/ai/scan-document'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -213,7 +438,7 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
         setCurrency(data.currency.toUpperCase());
       }
       if (typeof data.currentBalance === 'number' && data.currentBalance > 0) {
-        setCurrentBalance(data.currentBalance);
+        setBalanceInput(String(data.currentBalance));
       }
       if (data.memo) setMemo((prev) => (prev ? `${prev}\n${data.memo}` : data.memo));
       if (data.hasAtm || data.atmNumber) {
@@ -258,6 +483,16 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
     e.preventDefault();
 
     const cleanTotpSecret = totpSecret.toUpperCase().replace(/[^A-Z2-7]/g, '');
+    const parsedBalance = parseFloat(balanceInput);
+    const numericBalance = Number.isFinite(parsedBalance) ? parsedBalance : 0;
+
+    // Normalize expiry if it ends with trailing slash (e.g. '12/' -> '')
+    const normalizedExpiry = expiry.endsWith('/') ? expiry.slice(0, -1) : expiry.trim();
+
+    // Auto-save custom bank/organization name if not in built-in list
+    if (orgName.trim() && !isExactInstitutionMatch) {
+      handleSaveCustomInstitution(orgName.trim());
+    }
 
     const candidateAccount: Partial<AccountRecord> = {
       name: name.trim(),
@@ -268,13 +503,13 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
       currency,
       language,
       memo: memo.trim(),
-      currentBalance: Number(currentBalance) || 0,
+      currentBalance: numericBalance,
       atm: {
         hasAtm,
         atmNumber: hasAtm ? atmNumber.trim() : undefined,
         cvv: hasAtm ? cvv.trim() : undefined,
         atmPin: hasAtm ? atmPin.trim() : undefined,
-        expiry: hasAtm ? expiry.trim() : undefined,
+        expiry: hasAtm ? normalizedExpiry : undefined,
         cardNetwork: hasAtm && atmNumber ? detectCardNetwork(atmNumber) : undefined,
       },
       mobileBanking: {
@@ -487,10 +722,31 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
 
           {hasAtm && (
             <div className="space-y-3 pt-3 border-t border-slate-800/80 animate-fade-in">
+              {/* Security Warning Banner for Bank Cards */}
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-200 space-y-1">
+                <p className="font-bold text-amber-300">
+                  Security Advisory: Store Only the Last 4 Digits
+                </p>
+                <p className="text-slate-300 leading-relaxed">
+                  Bank card numbers should not be stored in full in a home-built vault. Store only the <strong>last 4 digits</strong> and the card name, and keep full details in a dedicated password manager.
+                </p>
+              </div>
+
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">
-                  {t.atmCardNumber} <span className="text-emerald-400">*</span>
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-medium text-slate-300">
+                    Card Last 4 Digits (or Card #) <span className="text-emerald-400">*</span>
+                  </label>
+                  {atmNumber.replace(/\D/g, '').length > 4 && (
+                    <button
+                      type="button"
+                      onClick={() => setAtmNumber(atmNumber.replace(/\D/g, '').slice(-4))}
+                      className="text-[11px] font-mono text-emerald-400 hover:underline"
+                    >
+                      Keep Last 4 Digits Only ({atmNumber.replace(/\D/g, '').slice(-4)})
+                    </button>
+                  )}
+                </div>
                 <input
                   type="text"
                   value={atmNumber}
@@ -498,7 +754,7 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
                     setAtmNumber(e.target.value);
                     if (errors.atmNumber) setErrors({ ...errors, atmNumber: '' });
                   }}
-                  placeholder="4111 2222 3333 4444"
+                  placeholder="e.g. 4821 (Last 4 digits recommended)"
                   maxLength={23}
                   className={`w-full h-11 px-3.5 rounded-xl bg-slate-950 border ${
                     errors.atmNumber ? 'border-red-500' : 'border-slate-700/80'
@@ -574,9 +830,10 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
                   </label>
                   <input
                     type="text"
+                    inputMode="numeric"
                     value={expiry}
-                    onChange={(e) => setExpiry(e.target.value)}
-                    placeholder="12/29"
+                    onChange={handleExpiryChange}
+                    placeholder="MM/YY"
                     maxLength={5}
                     className="w-full h-11 px-3 rounded-xl bg-slate-950 border border-slate-700/80 text-slate-100 placeholder-slate-500 text-sm font-mono text-center focus:outline-none focus:border-emerald-500"
                   />
@@ -769,22 +1026,102 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
         <div className="space-y-3">
           <h4 className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
             <DollarSign className="w-3.5 h-3.5 text-emerald-400" />
-            Institution & Balance Metadata
+            Institution & Balance Metadata (50+ Ethiopian Banks, Wallets & Custom)
           </h4>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                {t.bankOrgName}
-              </label>
+            {/* Searchable Bank / Wallet / Organization Field with Autocomplete & Custom Save */}
+            <div className="relative">
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-medium text-slate-300">
+                  {t.bankOrgName}
+                </label>
+                {orgName.trim() && !isExactInstitutionMatch && (
+                  <button
+                    type="button"
+                    onClick={() => handleSaveCustomInstitution(orgName)}
+                    className="text-[11px] font-mono text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Save "{orgName.trim().slice(0, 18)}" to Custom List</span>
+                  </button>
+                )}
+                {customSavedNotice && (
+                  <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
+                    <Check className="w-3 h-3" /> Saved!
+                  </span>
+                )}
+              </div>
+
               <input
                 type="text"
                 value={orgName}
-                onChange={(e) => setOrgName(e.target.value)}
-                placeholder="e.g. Commercial Bank of Ethiopia, Bank of Abyssinia, Telebirr"
+                onFocus={() => setShowOrgSuggestions(true)}
+                onBlur={() => {
+                  // Delay hiding so clicking a suggestion registers first
+                  setTimeout(() => setShowOrgSuggestions(false), 180);
+                }}
+                onChange={(e) => {
+                  setOrgName(e.target.value);
+                  setShowOrgSuggestions(true);
+                }}
+                placeholder="Type bank/wallet (e.g. CBE, Abyssinia, Telebirr, Dashen, M-Pesa...)"
                 className="w-full h-11 px-3.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500"
               />
+
+              {/* Live Autocomplete Dropdown while typing */}
+              {showOrgSuggestions && filteredInstitutionSuggestions.length > 0 && (
+                <div className="absolute z-40 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-2xl bg-slate-950 border border-slate-700 shadow-2xl divide-y divide-slate-800/70">
+                  {filteredInstitutionSuggestions.map((item) => (
+                    <button
+                      key={`${item.shortCode}-${item.name}`}
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        handleSelectInstitutionPreset(item);
+                      }}
+                      className="w-full px-3.5 py-2.5 text-left hover:bg-slate-900 flex items-center justify-between gap-2 transition-colors"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-slate-100 truncate">
+                          {item.name}
+                        </p>
+                        {item.ussd && (
+                          <p className="text-[10px] font-mono text-slate-400">
+                            USSD: {item.ussd} {item.app ? `· ${item.app}` : ''}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-mono ${
+                            item.shortCode === 'CUSTOM'
+                              ? 'bg-purple-500/15 text-purple-300 border border-purple-500/30'
+                              : item.category === 'Wallet'
+                              ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30'
+                              : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                          }`}
+                        >
+                          {item.shortCode === 'CUSTOM' ? 'Custom' : item.category}
+                        </span>
+                        {item.shortCode === 'CUSTOM' && (
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onMouseDown={(e) => handleRemoveCustomInstitution(item.name, e)}
+                            className="p-1 rounded hover:bg-rose-500/20 text-slate-400 hover:text-rose-400"
+                            title="Remove custom institution"
+                          >
+                            <X className="w-3 h-3" />
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
+
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
                 {t.originBranch}
@@ -796,6 +1133,60 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
                 placeholder="e.g. Bole Medhanealem Branch"
                 className="w-full h-11 px-3.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500"
               />
+            </div>
+          </div>
+
+          {/* Quick Select Ethiopian Banks, Wallets & Custom Chips */}
+          <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800/80 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] text-slate-400 font-mono flex items-center gap-1.5">
+                <Building2 className="w-3 h-3 text-emerald-400" />
+                Quick Select Institution (or type above to search all 50+ Ethiopian Banks & Wallets):
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {/* Custom User-Added Institutions first */}
+              {customInstitutions.map((customName) => (
+                <button
+                  key={`custom-${customName}`}
+                  type="button"
+                  onClick={() => setOrgName(customName)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-mono flex items-center gap-1.5 transition-colors ${
+                    orgName === customName
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-purple-950/40 border border-purple-500/30 text-purple-200 hover:border-purple-400'
+                  }`}
+                >
+                  <span>{customName}</span>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => handleRemoveCustomInstitution(customName, e)}
+                    className="hover:text-rose-300"
+                    title="Delete custom institution"
+                  >
+                    <X className="w-3 h-3" />
+                  </span>
+                </button>
+              ))}
+
+              {/* Top Quick Presets */}
+              {ETHIOPIAN_FINANCIAL_INSTITUTIONS.slice(0, 14).map((inst) => (
+                <button
+                  key={inst.shortCode}
+                  type="button"
+                  onClick={() => handleSelectInstitutionPreset(inst)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-mono transition-colors ${
+                    orgName === inst.name
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-slate-900 border border-slate-800 text-slate-300 hover:border-emerald-500/40'
+                  }`}
+                >
+                  {inst.shortCode === 'TELEBIRR' || inst.shortCode === 'MPESA' || inst.shortCode === 'CBEBIRR'
+                    ? `${inst.shortCode} (Wallet)`
+                    : `${inst.shortCode} · ${inst.name.split(' (')[0]}`}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -818,12 +1209,12 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">{t.currentBalance}</label>
               <input
-                type="number"
-                step="0.01"
-                value={currentBalance}
-                onChange={(e) => setCurrentBalance(parseFloat(e.target.value) || 0)}
+                type="text"
+                inputMode="decimal"
+                value={balanceInput}
+                onChange={handleBalanceInputChange}
                 placeholder="0.00"
-                className="w-full h-11 px-3 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 font-mono text-sm focus:outline-none focus:border-emerald-500"
+                className="w-full h-11 px-3 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 placeholder-slate-500 font-mono text-sm focus:outline-none focus:border-emerald-500"
               />
             </div>
 

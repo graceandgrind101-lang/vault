@@ -56,6 +56,9 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [hasPinConfigured, setHasPinConfigured] = useState(false);
   const [hasBioEnrolled, setHasBioEnrolled] = useState(false);
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockoutUntil, setLockoutUntil] = useState<number | null>(null);
+  const [lockoutRemaining, setLockoutRemaining] = useState(0);
 
   useEffect(() => {
     const pinConfigured = hasQuickPinConfigured();
@@ -71,22 +74,57 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
     setErrorMessage(null);
   }, [isLocked, hasExistingMaster]);
 
+  // Countdown timer for rate-limit lockout
+  useEffect(() => {
+    if (!lockoutUntil) {
+      setLockoutRemaining(0);
+      return;
+    }
+    const tick = () => {
+      const rem = Math.ceil((lockoutUntil - Date.now()) / 1000);
+      if (rem <= 0) {
+        setLockoutUntil(null);
+        setLockoutRemaining(0);
+        setFailedAttempts(0);
+        setErrorMessage(null);
+      } else {
+        setLockoutRemaining(rem);
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 500);
+    return () => clearInterval(interval);
+  }, [lockoutUntil]);
+
+  const recordFailedAttempt = (customMsg: string) => {
+    const nextCount = failedAttempts + 1;
+    setFailedAttempts(nextCount);
+    if (nextCount >= 5) {
+      const until = Date.now() + 30000;
+      setLockoutUntil(until);
+      setErrorMessage('Too many failed unlock attempts. Locked for 30 seconds.');
+    } else {
+      setErrorMessage(`${customMsg} (${5 - nextCount} attempts remaining before cooldown)`);
+    }
+  };
+
   // Auto-submit when 6-digit PIN is entered on keypad
   useEffect(() => {
-    if (unlockMode === 'pin' && hasExistingMaster && quickPinInput.length === 6) {
+    if (unlockMode === 'pin' && hasExistingMaster && quickPinInput.length === 6 && !lockoutUntil) {
       handleQuickPinUnlock(quickPinInput);
     }
-  }, [quickPinInput, unlockMode, hasExistingMaster]);
+  }, [quickPinInput, unlockMode, hasExistingMaster, lockoutUntil]);
 
   if (!isLocked && hasExistingMaster) return null;
 
   const handleQuickPinUnlock = async (pinCode: string) => {
+    if (lockoutUntil && Date.now() < lockoutUntil) return;
     setIsVerifying(true);
     setErrorMessage(null);
     try {
       const unwrappedPassphrase = await unlockWithQuickPin(pinCode);
       if (!unwrappedPassphrase) {
-        setErrorMessage('Invalid 6-digit PIN.');
+        recordFailedAttempt('Invalid 6-digit PIN.');
         setQuickPinInput('');
         if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
           navigator.vibrate([60, 40, 60]);
@@ -95,13 +133,15 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
       }
       const ok = await onUnlock(unwrappedPassphrase);
       if (!ok) {
-        setErrorMessage('PIN decryption mismatch. Use Master Passphrase.');
+        recordFailedAttempt('PIN decryption mismatch. Use Master Passphrase.');
         setUnlockMode('passphrase');
       } else {
+        setFailedAttempts(0);
+        setLockoutUntil(null);
         setQuickPinInput('');
       }
     } catch {
-      setErrorMessage('Failed to verify Quick PIN.');
+      recordFailedAttempt('Failed to verify Quick PIN.');
       setQuickPinInput('');
     } finally {
       setIsVerifying(false);
@@ -109,6 +149,7 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
   };
 
   const handleKeypadDigit = (digit: string) => {
+    if (lockoutUntil && Date.now() < lockoutUntil) return;
     if (quickPinInput.length < 6 && !isVerifying) {
       if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
         navigator.vibrate(15);
@@ -126,6 +167,7 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
   const handleUnlockSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!passphrase) return;
+    if (lockoutUntil && Date.now() < lockoutUntil) return;
     setIsVerifying(true);
     setErrorMessage(null);
 
@@ -158,14 +200,15 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
       } else {
         const success = await onUnlock(passphrase);
         if (!success) {
-          setErrorMessage('Invalid Master Passphrase. Decryption failed.');
+          recordFailedAttempt('Invalid Master Passphrase. Decryption failed.');
         } else {
-          // If biometrics weren't enrolled yet, silently enroll with verified passphrase if desired
+          setFailedAttempts(0);
+          setLockoutUntil(null);
           setPassphrase('');
         }
       }
     } catch {
-      setErrorMessage('Decryption verification error.');
+      recordFailedAttempt('Decryption verification error.');
     } finally {
       setIsVerifying(false);
     }
@@ -291,8 +334,9 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
             </div>
 
             {errorMessage && (
-              <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl p-2 text-center">
+              <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl p-2 text-center font-mono">
                 {errorMessage}
+                {lockoutRemaining > 0 && ` (Wait ${lockoutRemaining}s)`}
               </p>
             )}
 
@@ -303,8 +347,8 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
                   key={digit}
                   type="button"
                   onClick={() => handleKeypadDigit(digit)}
-                  disabled={isVerifying}
-                  className="h-13 rounded-2xl bg-slate-900/90 hover:bg-slate-800 active:scale-95 border border-slate-800 text-lg font-mono font-bold text-slate-100 transition-all flex items-center justify-center"
+                  disabled={isVerifying || lockoutRemaining > 0}
+                  className="h-13 rounded-2xl bg-slate-900/90 hover:bg-slate-800 active:scale-95 border border-slate-800 text-lg font-mono font-bold text-slate-100 transition-all flex items-center justify-center disabled:opacity-40"
                 >
                   {digit}
                 </button>
@@ -319,8 +363,8 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
               <button
                 type="button"
                 onClick={() => handleKeypadDigit('0')}
-                disabled={isVerifying}
-                className="h-13 rounded-2xl bg-slate-900/90 hover:bg-slate-800 active:scale-95 border border-slate-800 text-lg font-mono font-bold text-slate-100 transition-all flex items-center justify-center"
+                disabled={isVerifying || lockoutRemaining > 0}
+                className="h-13 rounded-2xl bg-slate-900/90 hover:bg-slate-800 active:scale-95 border border-slate-800 text-lg font-mono font-bold text-slate-100 transition-all flex items-center justify-center disabled:opacity-40"
               >
                 0
               </button>
@@ -348,7 +392,7 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
                   value={passphrase}
                   onChange={(e) => {
                     setPassphrase(e.target.value);
-                    if (errorMessage) setErrorMessage(null);
+                    if (errorMessage && !lockoutRemaining) setErrorMessage(null);
                   }}
                   placeholder={
                     hasExistingMaster
@@ -419,7 +463,7 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
                     <label className="flex items-center justify-between cursor-pointer">
                       <span className="flex items-center gap-2 text-slate-300">
                         <Database className="w-4 h-4 text-cyan-400 shrink-0" />
-                        <span>Load Demo Accounts for Testing (4 Accounts)</span>
+                        <span>Load Demo Accounts &amp; SaaS Secrets</span>
                       </span>
                       <input
                         type="checkbox"
@@ -430,8 +474,8 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
                     </label>
                     <p className="text-[10px] text-slate-500 mt-1">
                       {loadDemoOnInit
-                        ? 'Will populate 4 sample Ethiopian & US accounts encrypted with your new Master Passphrase.'
-                        : 'Starts with a clean, 100% empty zero-knowledge vault. You can also load demo data later in Security settings.'}
+                        ? 'Will populate sample accounts & SaaS API secrets encrypted with your new Master Passphrase.'
+                        : 'Starts with a clean, 100% empty zero-knowledge vault. You can also load demo data later.'}
                     </p>
                   </div>
                 </div>
@@ -439,20 +483,23 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
             )}
 
             {errorMessage && (
-              <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl p-2.5 text-center">
+              <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl p-2.5 text-center font-mono">
                 {errorMessage}
+                {lockoutRemaining > 0 && ` (Wait ${lockoutRemaining}s)`}
               </p>
             )}
 
             <button
               type="submit"
-              disabled={isVerifying}
+              disabled={isVerifying || lockoutRemaining > 0}
               className="w-full h-12 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-white text-sm font-semibold flex items-center justify-center gap-2 shadow-lg shadow-emerald-950 transition-all disabled:opacity-50"
             >
               <KeyRound className="w-4 h-4" />
               <span>
-                {isVerifying
-                  ? 'Deriving PBKDF2 Key...'
+                {lockoutRemaining > 0
+                  ? `Rate Limited • Retry in ${lockoutRemaining}s`
+                  : isVerifying
+                  ? 'Deriving PBKDF2 (600k) Key...'
                   : hasExistingMaster
                   ? t.unlockVault
                   : 'Create Encrypted Vault'}

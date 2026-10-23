@@ -1,0 +1,139 @@
+{
+  "entities": {
+    "UserVault": {
+      "title": "UserVault",
+      "description": "Zero-knowledge AES-256-GCM encrypted vault snapshot bound to an authenticated Google user UID.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Authenticated Firebase User UID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "salt": {
+          "type": "string",
+          "description": "Base64-encoded PBKDF2 salt",
+          "minLength": 8,
+          "maxLength": 256
+        },
+        "iv": {
+          "type": "string",
+          "description": "Base64-encoded AES-GCM 96-bit initialization vector",
+          "minLength": 8,
+          "maxLength": 256
+        },
+        "ciphertext": {
+          "type": "string",
+          "description": "Base64-encoded AES-256-GCM encrypted vault payload",
+          "minLength": 16,
+          "maxLength": 900000
+        },
+        "version": {
+          "type": "integer",
+          "description": "Vault encryption schema version"
+        },
+        "updatedAtIso": {
+          "type": "string",
+          "description": "ISO timestamp of last encrypted push",
+          "minLength": 10,
+          "maxLength": 64
+        }
+      },
+      "required": ["ownerId", "salt", "iv", "ciphertext", "version", "updatedAtIso"]
+    },
+    "EncryptedVaultSync": {
+      "title": "EncryptedVaultSync",
+      "description": "Zero-knowledge AES-256-GCM encrypted vault snapshot indexed by a private Sync Channel ID.",
+      "type": "object",
+      "properties": {
+        "syncId": {
+          "type": "string",
+          "description": "Private Sync Channel identifier (min 6 chars)",
+          "minLength": 6,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "salt": {
+          "type": "string",
+          "description": "Base64-encoded PBKDF2 salt",
+          "minLength": 8,
+          "maxLength": 256
+        },
+        "iv": {
+          "type": "string",
+          "description": "Base64-encoded AES-GCM initialization vector",
+          "minLength": 8,
+          "maxLength": 256
+        },
+        "ciphertext": {
+          "type": "string",
+          "description": "Base64-encoded AES-256-GCM encrypted vault payload",
+          "minLength": 16,
+          "maxLength": 900000
+        },
+        "version": {
+          "type": "integer",
+          "description": "Vault encryption schema version"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp string",
+          "minLength": 10,
+          "maxLength": 64
+        }
+      },
+      "required": ["syncId", "salt", "iv", "ciphertext", "version", "updatedAt"]
+    },
+    "TrackerStore": {
+      "title": "TrackerStore",
+      "description": "Read-only SaaS Stack Tracker hashed tokens and non-sensitive secret metadata projections (never contains secret_value or notes).",
+      "type": "object",
+      "properties": {
+        "storeId": {
+          "type": "string",
+          "description": "Store identifier",
+          "minLength": 4,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "tokens": {
+          "type": "array",
+          "description": "Bounded list of SHA-256 hashed read-only tokens (max 200)"
+        },
+        "items": {
+          "type": "array",
+          "description": "Bounded list of non-sensitive secret metadata projections (max 500)"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last metadata or token update",
+          "minLength": 10,
+          "maxLength": 64
+        }
+      },
+      "required": ["storeId", "tokens", "items", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/user_vaults/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserVault"
+      },
+      "description": "Stores AES-256-GCM encrypted vault snapshots bound to an authenticated Google user."
+    },
+    "/vault_sync/{syncId}": {
+      "schema": {
+        "$ref": "#/entities/EncryptedVaultSync"
+      },
+      "description": "Stores AES-256-GCM encrypted vault snapshots by private Sync Channel ID (single-document get/write only, list disabled)."
+    },
+    "/tracker_store/{storeId}": {
+      "schema": {
+        "$ref": "#/entities/TrackerStore"
+      },
+      "description": "Stores SHA-256 hashed tracker tokens and non-sensitive secret metadata projections for the SaaS Tracker API."
+    }
+  }
+}

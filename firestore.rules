@@ -1,0 +1,122 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidSyncChannelId(id) {
+      return id is string && id.size() >= 6 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // Validation Blueprint: UserVault (/user_vaults/{userId})
+    function isValidUserVault(data) {
+      return data.keys().hasAll(['ownerId', 'salt', 'iv', 'ciphertext', 'version', 'updatedAtIso']) &&
+             data.keys().hasOnly(['ownerId', 'salt', 'iv', 'ciphertext', 'version', 'updatedAtIso']) &&
+             data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+             data.salt is string && data.salt.size() >= 8 && data.salt.size() <= 256 &&
+             data.iv is string && data.iv.size() >= 8 && data.iv.size() <= 256 &&
+             data.ciphertext is string && data.ciphertext.size() >= 16 && data.ciphertext.size() <= 900000 &&
+             data.version is int && data.version >= 1 && data.version <= 100 &&
+             data.updatedAtIso is string && data.updatedAtIso.size() >= 10 && data.updatedAtIso.size() <= 64;
+    }
+
+    // Validation Blueprint: EncryptedVaultSync (/vault_sync/{syncId})
+    function isValidEncryptedSync(data) {
+      return data.keys().hasAll(['syncId', 'salt', 'iv', 'ciphertext', 'version', 'updatedAt']) &&
+             data.keys().hasOnly(['syncId', 'salt', 'iv', 'ciphertext', 'version', 'updatedAt']) &&
+             data.syncId is string && data.syncId.size() >= 6 && data.syncId.size() <= 128 &&
+             data.syncId.matches('^[a-zA-Z0-9_\\-]+$') &&
+             data.salt is string && data.salt.size() >= 8 && data.salt.size() <= 256 &&
+             data.iv is string && data.iv.size() >= 8 && data.iv.size() <= 256 &&
+             data.ciphertext is string && data.ciphertext.size() >= 16 && data.ciphertext.size() <= 900000 &&
+             data.version is int && data.version >= 1 && data.version <= 100 &&
+             data.updatedAt is string && data.updatedAt.size() >= 10 && data.updatedAt.size() <= 64;
+    }
+
+    // Validation Blueprint: TrackerStore (/tracker_store/{storeId})
+    function isValidTrackerStore(data) {
+      return data.keys().hasAll(['storeId', 'tokens', 'items', 'updatedAt']) &&
+             data.keys().hasOnly(['storeId', 'tokens', 'items', 'updatedAt']) &&
+             data.storeId is string && data.storeId.size() >= 4 && data.storeId.size() <= 128 &&
+             data.storeId.matches('^[a-zA-Z0-9_\\-]+$') &&
+             data.tokens is list && data.tokens.size() <= 200 &&
+             (data.tokens.size() == 0 || data.tokens[0] is map) &&
+             data.items is list && data.items.size() <= 500 &&
+             (data.items.size() == 0 || data.items[0] is map) &&
+             data.updatedAt is string && data.updatedAt.size() >= 10 && data.updatedAt.size() <= 64;
+    }
+
+    // 1. Authenticated Google User Vaults
+    match /user_vaults/{userId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+      allow create: if isVerifiedUser() &&
+                       isValidId(userId) &&
+                       isValidUserVault(incoming()) &&
+                       incoming().ownerId == request.auth.uid &&
+                       incoming().ownerId == userId;
+      allow update: if isVerifiedUser() &&
+                       isValidId(userId) &&
+                       isValidUserVault(incoming()) &&
+                       incoming().ownerId == existing().ownerId &&
+                       incoming().ownerId == request.auth.uid &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['salt', 'iv', 'ciphertext', 'version', 'updatedAtIso']);
+      allow delete: if isVerifiedUser() && isValidId(userId) && existing().ownerId == request.auth.uid;
+    }
+
+    // 2. Zero-Knowledge Encrypted Sync Channels (Single-Document Lookup Only; No Listing)
+    match /vault_sync/{syncId} {
+      allow get: if isValidSyncChannelId(syncId);
+      allow list: if false;
+      allow create: if isValidSyncChannelId(syncId) &&
+                       isValidEncryptedSync(incoming()) &&
+                       incoming().syncId == syncId;
+      allow update: if isValidSyncChannelId(syncId) &&
+                       isValidEncryptedSync(incoming()) &&
+                       incoming().syncId == existing().syncId &&
+                       incoming().syncId == syncId &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['salt', 'iv', 'ciphertext', 'version', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // 3. SaaS Stack Tracker Read-Only Metadata & Hashed Token Store (Single-Document Lookup Only; No Listing)
+    match /tracker_store/{storeId} {
+      allow get: if isValidId(storeId);
+      allow list: if false;
+      allow create: if isValidId(storeId) &&
+                       isValidTrackerStore(incoming()) &&
+                       incoming().storeId == storeId;
+      allow update: if isValidId(storeId) &&
+                       isValidTrackerStore(incoming()) &&
+                       incoming().storeId == existing().storeId &&
+                       incoming().storeId == storeId &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['tokens', 'items', 'updatedAt']);
+      allow delete: if false;
+    }
+  }
+}

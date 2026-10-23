@@ -3,6 +3,51 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function () {
+        // Unregister any stale dev-dist service workers that may cache old @vite/client scripts
+        if ('serviceWorker' in navigator && location.hostname.includes('run.app')) {
+          navigator.serviceWorker.getRegistrations().then(function (regs) {
+            regs.forEach(function (reg) {
+              if (reg.active && reg.active.scriptURL && reg.active.scriptURL.includes('dev-sw')) {
+                reg.unregister();
+              }
+            });
+          }).catch(function () {});
+        }
+        // Prevent @vite/client from throwing "WebSocket closed without opened" when HMR is disabled
+        var NativeWebSocket = window.WebSocket;
+        if (NativeWebSocket) {
+          var PatchedWebSocket = function (url, protocols) {
+            var protoStr = Array.isArray(protocols) ? protocols.join(',') : String(protocols || '');
+            if (protoStr.includes('vite-hmr') || protoStr.includes('vite-ping')) {
+              var dummy = Object.create(EventTarget.prototype);
+              dummy.url = url;
+              dummy.readyState = 1; // OPEN
+              dummy.protocol = protoStr;
+              dummy.extensions = '';
+              dummy.bufferedAmount = 0;
+              dummy. binaryType = 'blob';
+              dummy.send = function () {};
+              dummy.close = function () { dummy.readyState = 3; };
+              dummy.addEventListener = function () {};
+              dummy.removeEventListener = function () {};
+              dummy.dispatchEvent = function () { return true; };
+              return dummy;
+            }
+            return protocols !== undefined
+              ? new NativeWebSocket(url, protocols)
+              : new NativeWebSocket(url);
+          };
+          PatchedWebSocket.prototype = NativeWebSocket.prototype;
+          PatchedWebSocket.CONNECTING = NativeWebSocket.CONNECTING;
+          PatchedWebSocket.OPEN = NativeWebSocket.OPEN;
+          PatchedWebSocket.CLOSING = NativeWebSocket.CLOSING;
+          PatchedWebSocket.CLOSED = NativeWebSocket.CLOSED;
+          window.WebSocket = PatchedWebSocket;
+        }
+      })();
+    </script>
     <title>Krypton Vault - Zero-Knowledge Account Vault</title>
     <meta name="description" content="Mobile-first, zero-knowledge account management vault for bank credentials, virtual cards, encrypted PINs, and personal financial intelligence." />
     <meta property="og:title" content="Krypton Vault - Zero-Knowledge Account Vault" />

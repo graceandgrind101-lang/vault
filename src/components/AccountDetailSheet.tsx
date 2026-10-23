@@ -23,6 +23,7 @@ import {
 import { AccountRecord, SupportedLanguage, TransactionRecord } from '../types/account';
 import { VirtualCard } from './VirtualCard';
 import { BottomSheet } from './BottomSheet';
+import { resolveApiUrl } from '../firebase';
 import { translations } from '../utils/i18n';
 import { auditPinStrength, formatCurrency } from '../utils/validator';
 import { generateTOTPCode } from '../utils/totp';
@@ -182,7 +183,7 @@ export const AccountDetailSheet: React.FC<AccountDetailSheetProps> = ({
         reader.readAsDataURL(file);
       });
 
-      const res = await fetch('/api/ai/scan-document', {
+      const res = await fetch(resolveApiUrl('/api/ai/scan-document'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -248,7 +249,7 @@ export const AccountDetailSheet: React.FC<AccountDetailSheetProps> = ({
     >
       <div className="space-y-6 pb-6">
         {/* ================= 1. VIRTUAL CARD PREVIEW ================= */}
-        <div>
+        <div className="max-w-[380px] mx-auto">
           <VirtualCard
             account={account}
             isUnlocked={isVaultUnlocked}

@@ -2,7 +2,14 @@
  * Krypton Vault - Zero-Knowledge Cryptography Engine
  * Web Crypto API (SubtleCrypto) implementation for client-side encryption.
  * Master keys and raw secrets NEVER leave the user's browser device.
+ *
+ * Security Spec:
+ * - Key Derivation: PBKDF2-HMAC-SHA256 with 600,000 iterations & 16-byte CSPRNG salt
+ * - Cipher: AES-256-GCM with fresh 12-byte CSPRNG IV per encrypted value
  */
+
+export const PBKDF2_ITERATIONS_V2 = 600000;
+export const PBKDF2_ITERATIONS_LEGACY = 100000;
 
 const STORAGE_KEY_WEBAUTHN_CRED = 'krypton_vault_webauthn_cred_v2';
 const STORAGE_KEY_WEBAUTHN_WRAPPED = 'krypton_vault_webauthn_wrapped_v2';
@@ -30,11 +37,12 @@ export function base64ToBuffer(base64: string): Uint8Array {
 
 /**
  * Derives an AES-GCM 256-bit encryption key from a master passphrase and salt
- * using PBKDF2 with SHA-256 and 100,000 iterations.
+ * using PBKDF2 with SHA-256 and 600,000 iterations.
  */
 export async function deriveKeyFromPassphrase(
   passphrase: string,
-  salt: Uint8Array
+  salt: Uint8Array,
+  iterations: number = PBKDF2_ITERATIONS_V2
 ): Promise<CryptoKey> {
   const enc = new TextEncoder();
   const keyMaterial = await window.crypto.subtle.importKey(
@@ -49,7 +57,7 @@ export async function deriveKeyFromPassphrase(
     {
       name: 'PBKDF2',
       salt: salt as unknown as BufferSource,
-      iterations: 100000,
+      iterations,
       hash: 'SHA-256',
     },
     keyMaterial,
@@ -127,6 +135,57 @@ export async function decryptZeroKnowledgePayload<T = any>(
 }
 
 /**
+ * Encrypts a single string (such as secret_value or notes) on the client
+ * using AES-256-GCM with its own unique random 12-byte IV.
+ */
+export async function encryptSecretString(
+  plaintext: string,
+  key: CryptoKey
+): Promise<{ ciphertext: string; iv: string }> {
+  const enc = new TextEncoder();
+  const encoded = enc.encode(plaintext);
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+
+  const cipherBuffer = await window.crypto.subtle.encrypt(
+    {
+      name: 'AES-GCM',
+      iv: iv as unknown as BufferSource,
+    },
+    key,
+    encoded
+  );
+
+  return {
+    ciphertext: bufferToBase64(cipherBuffer),
+    iv: bufferToBase64(iv),
+  };
+}
+
+/**
+ * Decrypts an individual encrypted string field (secret_value or notes).
+ */
+export async function decryptSecretString(
+  payload: { ciphertext: string; iv: string } | undefined,
+  key: CryptoKey
+): Promise<string> {
+  if (!payload || !payload.ciphertext || !payload.iv) return '';
+  const cipherBuffer = base64ToBuffer(payload.ciphertext);
+  const ivBuffer = base64ToBuffer(payload.iv);
+
+  const decryptedBuffer = await window.crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv: ivBuffer as unknown as BufferSource,
+    },
+    key,
+    cipherBuffer as unknown as BufferSource
+  );
+
+  const dec = new TextDecoder();
+  return dec.decode(decryptedBuffer);
+}
+
+/**
  * Generates a random cryptographic salt (16 bytes).
  */
 export function generateSalt(): Uint8Array {
@@ -144,7 +203,9 @@ export async function createEncryptedVaultBackup(
   const { ciphertext, iv } = await encryptZeroKnowledgePayload(vaultData, key);
   const backup = {
     app: 'KryptonVault',
-    version: 2,
+    version: 3,
+    kdf: 'PBKDF2-SHA256',
+    iterations: PBKDF2_ITERATIONS_V2,
     exportedAt: new Date().toISOString(),
     salt: bufferToBase64(salt),
     iv,
@@ -155,6 +216,7 @@ export async function createEncryptedVaultBackup(
 
 /**
  * Decrypts and restores an encrypted backup file using the backup's master password.
+ * Supports both 600,000-iteration (v3) and 100,000-iteration (legacy v1/v2) backups.
  */
 export async function restoreEncryptedVaultBackup(
   backupJson: string,
@@ -166,9 +228,23 @@ export async function restoreEncryptedVaultBackup(
   }
 
   const salt = base64ToBuffer(parsed.salt);
-  const key = await deriveKeyFromPassphrase(passphrase, salt);
-  const data = await decryptZeroKnowledgePayload(parsed.ciphertext, parsed.iv, key);
-  return { data, salt, key };
+  const preferredIterations =
+    typeof parsed.iterations === 'number' ? parsed.iterations : PBKDF2_ITERATIONS_V2;
+
+  try {
+    const key = await deriveKeyFromPassphrase(passphrase, salt, preferredIterations);
+    const data = await decryptZeroKnowledgePayload(parsed.ciphertext, parsed.iv, key);
+    return { data, salt, key };
+  } catch {
+    // Fallback to legacy 100k iterations if backup was created prior to v3 upgrade
+    const fallbackKey = await deriveKeyFromPassphrase(
+      passphrase,
+      salt,
+      PBKDF2_ITERATIONS_LEGACY
+    );
+    const data = await decryptZeroKnowledgePayload(parsed.ciphertext, parsed.iv, fallbackKey);
+    return { data, salt, key: fallbackKey };
+  }
 }
 
 /**
@@ -257,8 +333,6 @@ export async function registerBiometricPasskey(passphrase: string): Promise<bool
     }
   } catch (err) {
     console.warn('WebAuthn native prompt blocked by iframe policy, falling back to local hardware token wrapper:', err);
-    // In sandboxed preview iframes where publickey-credentials-create permission is restricted,
-    // generate a local hardware-simulated credential token so the user can still test biometric pairing.
     const fallbackCredId = bufferToBase64(window.crypto.getRandomValues(new Uint8Array(24)));
     await wrapSecret(fallbackCredId);
     return true;

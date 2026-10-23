@@ -46,20 +46,18 @@ export function validateAccountInput(data: Partial<AccountRecord>): ValidationRe
     errors.phoneNumber = 'Please provide a valid phone number format.';
   }
 
-  // 4. ATM Module Validation
+  // 4. ATM Module Validation (Supports Last-4-Digits-Only Reference Mode or Full Number)
   if (data.atm?.hasAtm) {
-    const atmNumberClean = data.atm.atmNumber?.replace(/\s+/g, '') || '';
+    const atmNumberClean = data.atm.atmNumber?.replace(/[\s•*-]+/g, '') || '';
     if (!atmNumberClean) {
-      errors.atmNumber = 'ATM Card Number is required when ATM module is enabled.';
-    } else if (!/^\d{12,19}$/.test(atmNumberClean)) {
-      errors.atmNumber = 'ATM Card Number must be 12 to 19 digits.';
+      errors.atmNumber = 'Card Last 4 Digits (or Card Number) is required when ATM module is enabled.';
+    } else if (!/^(\d{4}|\d{12,19})$/.test(atmNumberClean)) {
+      errors.atmNumber = 'Enter only the last 4 digits (recommended) or 12–19 digits.';
     }
 
     const cvvClean = data.atm.cvv?.trim() || '';
-    if (!cvvClean) {
-      errors.cvv = 'CVV is required when ATM module is enabled.';
-    } else if (!/^\d{3,4}$/.test(cvvClean)) {
-      errors.cvv = 'CVV must be 3 or 4 digits.';
+    if (cvvClean && !/^\d{3,4}$/.test(cvvClean)) {
+      errors.cvv = 'CVV must be 3 or 4 digits (or leave blank for safety).';
     }
 
     const atmPinClean = data.atm.atmPin?.trim() || '';
