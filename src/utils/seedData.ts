@@ -24,6 +24,7 @@ export const INITIAL_SEED_ACCOUNTS: AccountRecord[] = [
       hasMobileBanking: true,
       mobileBankingPin: '7391',
       appIdentifier: 'Abyssinia Mobile Banking',
+      ussdCode: '*815#',
     },
     totp: {
       hasTotp: true,
@@ -146,6 +147,7 @@ export const INITIAL_SEED_ACCOUNTS: AccountRecord[] = [
       hasMobileBanking: true,
       mobileBankingPin: '5820',
       appIdentifier: 'CBE Birr App',
+      ussdCode: '*889#',
     },
     transactions: [
       {
@@ -188,6 +190,7 @@ export const INITIAL_SEED_ACCOUNTS: AccountRecord[] = [
       hasMobileBanking: true,
       mobileBankingPin: '4192',
       appIdentifier: 'Telebirr SuperApp',
+      ussdCode: '*127#',
     },
     transactions: [
       {

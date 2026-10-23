@@ -30,6 +30,7 @@ export interface MobileBankingModule {
   hasMobileBanking: boolean;
   mobileBankingPin?: string; // Masked in UI output
   appIdentifier?: string;    // e.g., CBE Birr, Telebirr, Chase Mobile
+  ussdCode?: string;         // e.g., *889#, *815#, *127#
 }
 
 export interface TotpModule {
@@ -80,7 +81,13 @@ export interface EncryptedVaultBackup {
   salt: string;
   iv: string;
   ciphertext: string;
-  checksum: string;
+  checksum?: string;
+}
+
+export interface ExchangeRatesConfig {
+  baseCurrency: string; // e.g., 'ETB' or 'USD'
+  // Value of 1 USD in target currencies (used for cross-conversion)
+  ratesPerUsd: Record<string, number>;
 }
 
 export interface VaultSecurityConfig {
@@ -88,4 +95,6 @@ export interface VaultSecurityConfig {
   biometricEnabled: boolean;
   lockOnTabSwitch: boolean;
   hideScreenOnSwitch: boolean;
+  syncVaultId?: string;
+  lastSyncedAt?: string;
 }

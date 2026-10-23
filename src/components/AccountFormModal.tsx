@@ -1,5 +1,18 @@
-import React, { useState, useEffect } from 'react';
-import { Shield, Eye, EyeOff, Sparkles, CreditCard, Smartphone, Building2, MapPin, DollarSign, Globe2 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  Shield,
+  Eye,
+  EyeOff,
+  Sparkles,
+  CreditCard,
+  Smartphone,
+  Building2,
+  DollarSign,
+  KeyRound,
+  Camera,
+  Loader2,
+  PhoneCall,
+} from 'lucide-react';
 import { AccountRecord, SupportedLanguage } from '../types/account';
 import { validateAccountInput, parseRawAccountSnippet, detectCardNetwork } from '../utils/validator';
 import { BottomSheet } from './BottomSheet';
@@ -12,6 +25,15 @@ interface AccountFormModalProps {
   initialAccount?: AccountRecord | null;
   currentLanguage: SupportedLanguage;
 }
+
+const ETHIOPIAN_USSD_PRESETS = [
+  { label: 'CBE (*889#)', code: '*889#', app: 'CBE Birr / Mobile' },
+  { label: 'Abyssinia (*815#)', code: '*815#', app: 'BoA Apollo / Mobile' },
+  { label: 'Telebirr (*127#)', code: '*127#', app: 'Telebirr SuperApp' },
+  { label: 'Awash (*901#)', code: '*901#', app: 'AwashBirr Pro' },
+  { label: 'Dashen (*805#)', code: '*805#', app: 'Amole / Dashen SuperApp' },
+  { label: 'Coopbank (*847#)', code: '*847#', app: 'Coopay-Ebirr' },
+];
 
 export const AccountFormModal: React.FC<AccountFormModalProps> = ({
   isOpen,
@@ -27,7 +49,7 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
   const [phoneNumber, setPhoneNumber] = useState('');
   const [orgName, setOrgName] = useState('');
   const [branchName, setBranchName] = useState('');
-  const [currency, setCurrency] = useState('USD');
+  const [currency, setCurrency] = useState('ETB');
   const [language, setLanguage] = useState<SupportedLanguage>(currentLanguage);
   const [memo, setMemo] = useState('');
   const [currentBalance, setCurrentBalance] = useState<number>(0);
@@ -45,12 +67,21 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
   const [hasMobileBanking, setHasMobileBanking] = useState(false);
   const [mobileBankingPin, setMobileBankingPin] = useState('');
   const [appIdentifier, setAppIdentifier] = useState('');
+  const [ussdCode, setUssdCode] = useState('');
   const [showMobilePin, setShowMobilePin] = useState(false);
 
-  // Smart Parser state
+  // TOTP 2FA Module state
+  const [hasTotp, setHasTotp] = useState(false);
+  const [totpSecret, setTotpSecret] = useState('');
+  const [totpIssuer, setTotpIssuer] = useState('');
+  const [otpAuthUri, setOtpAuthUri] = useState('');
+
+  // Smart Parser & AI Vision Scanner state
   const [showSmartPaste, setShowSmartPaste] = useState(false);
   const [rawPasteText, setRawPasteText] = useState('');
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
+  const [isAiScanning, setIsAiScanning] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -62,7 +93,7 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
       setPhoneNumber(initialAccount.phoneNumber || '');
       setOrgName(initialAccount.orgName || '');
       setBranchName(initialAccount.branchName || '');
-      setCurrency(initialAccount.currency || 'USD');
+      setCurrency(initialAccount.currency || 'ETB');
       setLanguage(initialAccount.language || currentLanguage);
       setMemo(initialAccount.memo || '');
       setCurrentBalance(initialAccount.currentBalance || 0);
@@ -76,6 +107,11 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
       setHasMobileBanking(initialAccount.mobileBanking?.hasMobileBanking || false);
       setMobileBankingPin(initialAccount.mobileBanking?.mobileBankingPin || '');
       setAppIdentifier(initialAccount.mobileBanking?.appIdentifier || '');
+      setUssdCode(initialAccount.mobileBanking?.ussdCode || '');
+
+      setHasTotp(Boolean(initialAccount.totp?.hasTotp && initialAccount.totp?.secret));
+      setTotpSecret(initialAccount.totp?.secret || '');
+      setTotpIssuer(initialAccount.totp?.issuer || '');
     } else {
       resetForm();
     }
@@ -87,7 +123,7 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
     setPhoneNumber('');
     setOrgName('');
     setBranchName('');
-    setCurrency('USD');
+    setCurrency('ETB');
     setLanguage(currentLanguage);
     setMemo('');
     setCurrentBalance(0);
@@ -99,6 +135,11 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
     setHasMobileBanking(false);
     setMobileBankingPin('');
     setAppIdentifier('');
+    setUssdCode('');
+    setHasTotp(false);
+    setTotpSecret('');
+    setTotpIssuer('');
+    setOtpAuthUri('');
     setShowSmartPaste(false);
     setRawPasteText('');
     setPasteNotice(null);
@@ -124,15 +165,99 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
 
     if (parsed.mobileBanking?.hasMobileBanking) {
       setHasMobileBanking(true);
-      if (parsed.mobileBanking.mobileBankingPin) setMobileBankingPin(parsed.mobileBanking.mobileBankingPin);
+      if (parsed.mobileBanking.mobileBankingPin) {
+        setMobileBankingPin(parsed.mobileBanking.mobileBankingPin);
+      }
     }
 
     setPasteNotice('Parsed fields populated into secure form! Verify details below.');
     setTimeout(() => setPasteNotice(null), 4000);
   };
 
+  const handleAiPhotoScan = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsAiScanning(true);
+    setPasteNotice(null);
+
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const res = await fetch('/api/ai/scan-document', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: base64,
+          mimeType: file.type || 'image/jpeg',
+          rawText: rawPasteText,
+          mode: 'account',
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'AI scan failed.');
+      }
+
+      if (data.name) setName(data.name);
+      if (data.accountNumber) setAccountNumber(data.accountNumber);
+      if (data.phoneNumber) setPhoneNumber(data.phoneNumber);
+      if (data.orgName) setOrgName(data.orgName);
+      if (data.branchName) setBranchName(data.branchName);
+      if (data.currency && ['USD', 'ETB', 'EUR', 'GBP', 'CAD'].includes(data.currency.toUpperCase())) {
+        setCurrency(data.currency.toUpperCase());
+      }
+      if (typeof data.currentBalance === 'number' && data.currentBalance > 0) {
+        setCurrentBalance(data.currentBalance);
+      }
+      if (data.memo) setMemo((prev) => (prev ? `${prev}\n${data.memo}` : data.memo));
+      if (data.hasAtm || data.atmNumber) {
+        setHasAtm(true);
+        if (data.atmNumber) setAtmNumber(data.atmNumber);
+        if (data.expiry) setExpiry(data.expiry);
+      }
+
+      setPasteNotice('Gemini AI extracted document metadata! Enter your private PINs below.');
+    } catch (err: any) {
+      setPasteNotice(`AI Scan Notice: ${err.message || 'Could not scan image.'}`);
+    } finally {
+      setIsAiScanning(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleParseOtpAuthUri = (uri: string) => {
+    setOtpAuthUri(uri);
+    if (!uri.trim().startsWith('otpauth://')) return;
+    try {
+      const url = new URL(uri.trim());
+      const secretParam = url.searchParams.get('secret');
+      const issuerParam = url.searchParams.get('issuer');
+      if (secretParam) {
+        setTotpSecret(secretParam.toUpperCase().replace(/\s+/g, ''));
+      }
+      if (issuerParam) {
+        setTotpIssuer(issuerParam);
+      } else {
+        const pathLabel = decodeURIComponent(url.pathname.replace(/^\/\/totp\//, '').replace(/^\//, ''));
+        if (pathLabel.includes(':')) {
+          setTotpIssuer(pathLabel.split(':')[0]);
+        }
+      }
+    } catch {
+      // Ignore malformed URI
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+
+    const cleanTotpSecret = totpSecret.toUpperCase().replace(/[^A-Z2-7]/g, '');
 
     const candidateAccount: Partial<AccountRecord> = {
       name: name.trim(),
@@ -156,7 +281,15 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
         hasMobileBanking,
         mobileBankingPin: hasMobileBanking ? mobileBankingPin.trim() : undefined,
         appIdentifier: hasMobileBanking ? appIdentifier.trim() : undefined,
+        ussdCode: hasMobileBanking ? ussdCode.trim() : undefined,
       },
+      totp: hasTotp && cleanTotpSecret
+        ? {
+            hasTotp: true,
+            secret: cleanTotpSecret,
+            issuer: totpIssuer.trim() || orgName.trim() || 'Vault 2FA',
+          }
+        : { hasTotp: false },
       transactions: initialAccount?.transactions || [],
     };
 
@@ -179,36 +312,69 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
       maxHeight="max-h-[92vh]"
     >
       <form onSubmit={handleSubmit} className="space-y-5 pb-6">
-        {/* Smart Paste Accordion Button */}
-        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3">
-          <button
-            type="button"
-            onClick={() => setShowSmartPaste(!showSmartPaste)}
-            className="w-full flex items-center justify-between text-left"
-          >
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-emerald-400" />
+        {/* Smart Paste & Gemini AI Vision Scanner Bar */}
+        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setShowSmartPaste(!showSmartPaste)}
+              className="flex items-center gap-2 text-left"
+            >
+              <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
               <span className="text-xs font-semibold text-slate-200">
-                Smart Auto-Parser (Paste Bank SMS / Notification)
+                Smart SMS Parser & AI Receipt/Card Scanner
               </span>
+            </button>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isAiScanning}
+                className="px-2.5 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 text-[11px] font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              >
+                {isAiScanning ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Camera className="w-3.5 h-3.5" />
+                )}
+                <span>{isAiScanning ? 'Scanning...' : 'Scan Receipt / Card (AI)'}</span>
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleAiPhotoScan}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => setShowSmartPaste(!showSmartPaste)}
+                className="text-[11px] text-slate-400 hover:text-white font-medium px-1.5"
+              >
+                {showSmartPaste ? 'Hide SMS' : 'Paste SMS'}
+              </button>
             </div>
-            <span className="text-[11px] text-emerald-400 font-medium">
-              {showSmartPaste ? 'Collapse' : 'Expand'}
-            </span>
-          </button>
+          </div>
+
+          {pasteNotice && (
+            <p className="text-xs text-emerald-400 font-medium bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-1.5">
+              {pasteNotice}
+            </p>
+          )}
 
           {showSmartPaste && (
-            <div className="mt-3 pt-3 border-t border-slate-800/80 space-y-2">
+            <div className="pt-2 border-t border-slate-800/80 space-y-2">
               <textarea
                 value={rawPasteText}
                 onChange={(e) => setRawPasteText(e.target.value)}
-                placeholder="e.g. Chase Bank Alert: Account #987654321 holder Sarah J. Phone: +15551234567. Bal: $2,500.00. ATM Card 4111222233334444 PIN 4321..."
+                placeholder="e.g. CBE Alert: Account #100038492012 holder Abebe B. Phone: +251911234567. Bal: ETB 145,200.00..."
                 rows={3}
                 className="w-full text-xs bg-slate-950 border border-slate-700/80 rounded-xl p-2.5 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
               <div className="flex items-center justify-between">
                 <span className="text-[10px] text-slate-400">
-                  Parses client-side. Zero plaintext leaks.
+                  Parses locally on device. Zero plaintext PIN leaks.
                 </span>
                 <button
                   type="button"
@@ -218,20 +384,15 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
                   Auto-Populate Form
                 </button>
               </div>
-              {pasteNotice && (
-                <p className="text-xs text-emerald-400 font-medium animate-fade-in">
-                  {pasteNotice}
-                </p>
-              )}
             </div>
           )}
         </div>
 
         {/* ================= SECTION 1: REQUIRED CORE IDENTIFIERS ================= */}
         <div className="space-y-3">
-          <h4 className="text-xs uppercase font-mono tracking-wider text-slate-400 flex items-center gap-1.5">
+          <h4 className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
             <Building2 className="w-3.5 h-3.5 text-emerald-400" />
-            Core Identifiers (Required)
+            Core Account Identifiers
           </h4>
 
           {/* Account Name */}
@@ -247,7 +408,7 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
                 setName(e.target.value);
                 if (errors.name) setErrors({ ...errors, name: '' });
               }}
-              placeholder="e.g. Premier Business Checking, Personal Savings"
+              placeholder="e.g. Primary Business Checking, Personal Savings"
               className={`w-full h-11 px-3.5 rounded-xl bg-slate-900 border ${
                 errors.name ? 'border-red-500' : 'border-slate-800'
               } text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500`}
@@ -310,7 +471,7 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
               <CreditCard className="w-4 h-4 text-emerald-400" />
               <div>
                 <p className="text-xs font-semibold text-slate-200">{t.atmModule}</p>
-                <p className="text-[10px] text-slate-400">Includes physical/virtual debit card & ATM PIN</p>
+                <p className="text-[10px] text-slate-400">Physical/virtual debit card & encrypted ATM PIN</p>
               </div>
             </div>
             <label className="relative inline-flex items-center cursor-pointer">
@@ -326,7 +487,6 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
 
           {hasAtm && (
             <div className="space-y-3 pt-3 border-t border-slate-800/80 animate-fade-in">
-              {/* ATM Card Number */}
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1">
                   {t.atmCardNumber} <span className="text-emerald-400">*</span>
@@ -347,9 +507,7 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
                 {errors.atmNumber && <p className="text-xs text-red-400 mt-1">{errors.atmNumber}</p>}
               </div>
 
-              {/* CVV, PIN & Expiry Row */}
               <div className="grid grid-cols-3 gap-2.5">
-                {/* CVV */}
                 <div>
                   <label className="block text-xs font-medium text-slate-300 mb-1">
                     {t.cvv} <span className="text-emerald-400">*</span>
@@ -380,7 +538,6 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
                   {errors.cvv && <p className="text-[10px] text-red-400 mt-0.5">{errors.cvv}</p>}
                 </div>
 
-                {/* ATM PIN */}
                 <div>
                   <label className="block text-xs font-medium text-slate-300 mb-1">
                     {t.atmPin} <span className="text-emerald-400">*</span>
@@ -411,7 +568,6 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
                   {errors.atmPin && <p className="text-[10px] text-red-400 mt-0.5">{errors.atmPin}</p>}
                 </div>
 
-                {/* Expiry */}
                 <div>
                   <label className="block text-xs font-medium text-slate-300 mb-1">
                     Expiry (MM/YY)
@@ -430,14 +586,14 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
           )}
         </div>
 
-        {/* ================= SECTION 3: MOBILE BANKING MODULE ================= */}
+        {/* ================= SECTION 3: MOBILE BANKING & USSD MODULE ================= */}
         <div className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Smartphone className="w-4 h-4 text-emerald-400" />
               <div>
                 <p className="text-xs font-semibold text-slate-200">{t.mobileBankingModule}</p>
-                <p className="text-[10px] text-slate-400">Mobile banking app PIN & digital transfer access</p>
+                <p className="text-[10px] text-slate-400">Mobile app PIN & Ethiopian USSD quick dialers</p>
               </div>
             </div>
             <label className="relative inline-flex items-center cursor-pointer">
@@ -452,65 +608,170 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
           </div>
 
           {hasMobileBanking && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-slate-800/80 animate-fade-in">
-              {/* Mobile PIN */}
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">
-                  {t.mobileBankingPin} <span className="text-emerald-400">*</span>
-                </label>
-                <div className="relative">
-                  <input
-                    type={showMobilePin ? 'text' : 'password'}
-                    value={mobileBankingPin}
-                    onChange={(e) => {
-                      setMobileBankingPin(e.target.value);
-                      if (errors.mobileBankingPin) setErrors({ ...errors, mobileBankingPin: '' });
-                    }}
-                    placeholder="••••"
-                    maxLength={8}
-                    className={`w-full h-11 px-3.5 rounded-xl bg-slate-950 border ${
-                      errors.mobileBankingPin ? 'border-red-500' : 'border-slate-700/80'
-                    } text-slate-100 placeholder-slate-500 text-sm font-mono tracking-widest focus:outline-none focus:border-emerald-500`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowMobilePin(!showMobilePin)}
-                    aria-label="Toggle Mobile Banking PIN visibility"
-                    className="absolute right-3 top-3 text-slate-400 hover:text-white"
-                  >
-                    {showMobilePin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
+            <div className="space-y-3 pt-3 border-t border-slate-800/80 animate-fade-in">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    {t.mobileBankingPin} <span className="text-emerald-400">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showMobilePin ? 'text' : 'password'}
+                      value={mobileBankingPin}
+                      onChange={(e) => {
+                        setMobileBankingPin(e.target.value);
+                        if (errors.mobileBankingPin) setErrors({ ...errors, mobileBankingPin: '' });
+                      }}
+                      placeholder="••••"
+                      maxLength={8}
+                      className={`w-full h-11 px-3.5 rounded-xl bg-slate-950 border ${
+                        errors.mobileBankingPin ? 'border-red-500' : 'border-slate-700/80'
+                      } text-slate-100 placeholder-slate-500 text-sm font-mono tracking-widest focus:outline-none focus:border-emerald-500`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowMobilePin(!showMobilePin)}
+                      aria-label="Toggle Mobile Banking PIN visibility"
+                      className="absolute right-3 top-3 text-slate-400 hover:text-white"
+                    >
+                      {showMobilePin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  {errors.mobileBankingPin && (
+                    <p className="text-xs text-red-400 mt-1">{errors.mobileBankingPin}</p>
+                  )}
                 </div>
-                {errors.mobileBankingPin && (
-                  <p className="text-xs text-red-400 mt-1">{errors.mobileBankingPin}</p>
-                )}
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    App / Service Name
+                  </label>
+                  <input
+                    type="text"
+                    value={appIdentifier}
+                    onChange={(e) => setAppIdentifier(e.target.value)}
+                    placeholder="e.g. CBE Birr, Telebirr"
+                    className="w-full h-11 px-3.5 rounded-xl bg-slate-950 border border-slate-700/80 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    USSD Dialer Code
+                  </label>
+                  <input
+                    type="text"
+                    value={ussdCode}
+                    onChange={(e) => setUssdCode(e.target.value)}
+                    placeholder="e.g. *889#"
+                    className="w-full h-11 px-3.5 rounded-xl bg-slate-950 border border-slate-700/80 text-slate-100 placeholder-slate-500 text-sm font-mono focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
               </div>
 
-              {/* Mobile App Identifier */}
+              {/* Quick Ethiopian USSD Preset Selector */}
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">
-                  App / Service Name
+                <p className="text-[10px] text-slate-400 font-mono mb-1.5 flex items-center gap-1">
+                  <PhoneCall className="w-3 h-3 text-emerald-400" />
+                  Quick Fill Ethiopian Bank USSD:
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {ETHIOPIAN_USSD_PRESETS.map((preset) => (
+                    <button
+                      key={preset.code}
+                      type="button"
+                      onClick={() => {
+                        setUssdCode(preset.code);
+                        if (!appIdentifier) setAppIdentifier(preset.app);
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-mono transition-colors ${
+                        ussdCode === preset.code
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-slate-950 border border-slate-800 text-slate-300 hover:border-emerald-500/40'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ================= SECTION 4: 2FA / TOTP AUTHENTICATOR MODULE ================= */}
+        <div className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <KeyRound className="w-4 h-4 text-emerald-400" />
+              <div>
+                <p className="text-xs font-semibold text-slate-200">2FA / TOTP Authenticator</p>
+                <p className="text-[10px] text-slate-400">Generate live 6-digit RFC 6238 2FA codes offline</p>
+              </div>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={hasTotp}
+                onChange={(e) => setHasTotp(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+            </label>
+          </div>
+
+          {hasTotp && (
+            <div className="space-y-3 pt-3 border-t border-slate-800/80 animate-fade-in">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    Base32 Secret Key <span className="text-emerald-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={totpSecret}
+                    onChange={(e) => setTotpSecret(e.target.value.toUpperCase())}
+                    placeholder="e.g. JBSWY3DPEHPK3PXP"
+                    className="w-full h-11 px-3.5 rounded-xl bg-slate-950 border border-slate-700/80 text-slate-100 placeholder-slate-500 text-xs font-mono tracking-wider focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    2FA Issuer Label
+                  </label>
+                  <input
+                    type="text"
+                    value={totpIssuer}
+                    onChange={(e) => setTotpIssuer(e.target.value)}
+                    placeholder="e.g. Chase, Bank of Abyssinia"
+                    className="w-full h-11 px-3.5 rounded-xl bg-slate-950 border border-slate-700/80 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-mono text-slate-400 mb-1">
+                  Or Paste otpauth:// URI to Auto-Extract Secret:
                 </label>
                 <input
                   type="text"
-                  value={appIdentifier}
-                  onChange={(e) => setAppIdentifier(e.target.value)}
-                  placeholder="e.g. CBE Birr, Telebirr, Chase Mobile"
-                  className="w-full h-11 px-3.5 rounded-xl bg-slate-950 border border-slate-700/80 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500"
+                  value={otpAuthUri}
+                  onChange={(e) => handleParseOtpAuthUri(e.target.value)}
+                  placeholder="otpauth://totp/Bank:User?secret=JBSWY3DPEHPK3PXP&issuer=Bank"
+                  className="w-full h-9 px-3 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 placeholder-slate-600 text-xs font-mono focus:outline-none focus:border-emerald-500"
                 />
               </div>
             </div>
           )}
         </div>
 
-        {/* ================= SECTION 4: METADATA & FINANCIAL TRACKING ================= */}
+        {/* ================= SECTION 5: METADATA & FINANCIAL TRACKING ================= */}
         <div className="space-y-3">
-          <h4 className="text-xs uppercase font-mono tracking-wider text-slate-400 flex items-center gap-1.5">
+          <h4 className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
             <DollarSign className="w-3.5 h-3.5 text-emerald-400" />
-            Metadata & Balance Tracking
+            Institution & Balance Metadata
           </h4>
 
-          {/* Bank Org Name & Branch Name */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">
@@ -520,7 +781,7 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
                 type="text"
                 value={orgName}
                 onChange={(e) => setOrgName(e.target.value)}
-                placeholder="e.g. Bank of Abyssinia, Chase, CBE"
+                placeholder="e.g. Commercial Bank of Ethiopia, Bank of Abyssinia, Telebirr"
                 className="w-full h-11 px-3.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500"
               />
             </div>
@@ -538,7 +799,6 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
             </div>
           </div>
 
-          {/* Currency, Balance & Language */}
           <div className="grid grid-cols-3 gap-2.5">
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">Currency</label>
@@ -547,8 +807,8 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
                 onChange={(e) => setCurrency(e.target.value)}
                 className="w-full h-11 px-3 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm font-mono focus:outline-none focus:border-emerald-500"
               >
-                <option value="USD">USD ($)</option>
                 <option value="ETB">ETB (Birr)</option>
+                <option value="USD">USD ($)</option>
                 <option value="EUR">EUR (€)</option>
                 <option value="GBP">GBP (£)</option>
                 <option value="CAD">CAD ($)</option>
@@ -583,7 +843,6 @@ export const AccountFormModal: React.FC<AccountFormModalProps> = ({
             </div>
           </div>
 
-          {/* Memo & Notes */}
           <div>
             <label className="block text-xs font-medium text-slate-300 mb-1">{t.memo}</label>
             <textarea
