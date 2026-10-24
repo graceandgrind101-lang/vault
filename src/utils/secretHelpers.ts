@@ -379,6 +379,13 @@ export function parseSecretsMetadataCsv(csvText: string): Omit<SecretItem, 'secr
   return results;
 }
 
+export const DEMO_SECRET_IDS = [
+  'sec_pharmacy_supabase_prod',
+  'sec_shared_telegram_bot',
+  'sec_restaurant_chapa_live',
+  'sec_minimarket_resend_prod',
+];
+
 /**
  * Generates sample encrypted SaaS secrets when the user chooses "Load Demo Accounts / Secrets"
  */

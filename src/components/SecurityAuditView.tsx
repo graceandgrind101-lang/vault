@@ -18,6 +18,11 @@ import {
   EyeOff,
   LogOut,
   UserCheck,
+  Trash2,
+  Share2,
+  ClipboardPaste,
+  Info,
+  Mail,
 } from 'lucide-react';
 import { AccountRecord, SupportedLanguage, VaultSecurityConfig } from '../types/account';
 import { auditPinStrength } from '../utils/validator';
@@ -35,6 +40,9 @@ import {
   onAuthStateChanged,
   signInWithGoogleForVault,
   signOutFromVaultCloud,
+  getLinkedCloudIdentity,
+  bindDirectCloudIdentity,
+  LinkedCloudIdentity,
   User,
 } from '../firebase';
 
@@ -42,11 +50,13 @@ interface SecurityAuditViewProps {
   accounts: AccountRecord[];
   securityConfig: VaultSecurityConfig;
   onUpdateSecurityConfig: (config: VaultSecurityConfig) => void;
-  onExportBackup: () => void;
+  onExportBackup: () => Promise<{ json: string; filename: string } | null>;
   onImportBackup: (jsonContent: string, passphrase?: string) => Promise<boolean>;
   onPushCloudSync: (syncId: string) => Promise<boolean>;
   onPullCloudSync: (syncId: string, passphrase?: string) => Promise<boolean>;
   onLoadDemoAccounts: () => void;
+  onClearDemoData?: () => void;
+  hasDemoData?: boolean;
   currentLanguage: SupportedLanguage;
 }
 
@@ -59,6 +69,8 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
   onPushCloudSync,
   onPullCloudSync,
   onLoadDemoAccounts,
+  onClearDemoData,
+  hasDemoData,
   currentLanguage,
 }) => {
   const t = translations[currentLanguage];
@@ -67,13 +79,29 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
   const [backupPassphraseInput, setBackupPassphraseInput] = useState('');
   const [isRestoring, setIsRestoring] = useState(false);
 
-  // Cloud Sync & Firebase Auth State
-  const [syncIdInput, setSyncIdInput] = useState(securityConfig.syncVaultId || '');
+  // Offline Backup Export & Paste Restore Drawer State (for Standalone Android APK & Web)
+  const [exportedBackupData, setExportedBackupData] = useState<{
+    json: string;
+    filename: string;
+  } | null>(null);
+  const [copiedBackupJson, setCopiedBackupJson] = useState(false);
+  const [showPasteRestoreModal, setShowPasteRestoreModal] = useState(false);
+  const [pastedBackupText, setPastedBackupText] = useState('');
+
+  // Cloud Sync & Firebase Identity State
+  const [linkedIdentity, setLinkedIdentity] = useState<LinkedCloudIdentity | null>(() =>
+    getLinkedCloudIdentity()
+  );
+  const [syncIdInput, setSyncIdInput] = useState(
+    securityConfig.syncVaultId || getLinkedCloudIdentity()?.vaultChannelId || ''
+  );
   const [syncPassphraseInput, setSyncPassphraseInput] = useState('');
   const [showSyncPullPrompt, setShowSyncPullPrompt] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(auth.currentUser);
+  const [showDirectEmailBind, setShowDirectEmailBind] = useState(false);
+  const [directEmailInput, setDirectEmailInput] = useState('');
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
@@ -136,6 +164,73 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
   if (sharedPins.length > 0) healthScore -= sharedPins.length * 20;
   healthScore = Math.max(20, Math.min(100, healthScore));
 
+  // Trigger Export Backup and open Android/Web Export Drawer
+  const handleTriggerExport = async () => {
+    setImportStatus(null);
+    const result = await onExportBackup();
+    if (result) {
+      setExportedBackupData(result);
+    }
+  };
+
+  // Share or Save Backup File natively on Android via Web Share API
+  const handleNativeShareBackup = async () => {
+    if (!exportedBackupData) return;
+    try {
+      const file = new File([exportedBackupData.json], exportedBackupData.filename, {
+        type: 'application/json',
+      });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          title: 'Krypton Vault Encrypted Backup',
+          text: 'AES-256-GCM Zero-Knowledge Encrypted Vault Backup (.json)',
+          files: [file],
+        });
+        setImportStatus('Backup file shared / saved via system share sheet.');
+        return;
+      }
+      if (navigator.share) {
+        await navigator.share({
+          title: exportedBackupData.filename,
+          text: exportedBackupData.json,
+        });
+        setImportStatus('Encrypted backup shared via Android share sheet.');
+        return;
+      }
+    } catch {
+      // User dismissed share sheet or share API unavailable, fallback to copy
+    }
+    await handleCopyBackupJson();
+  };
+
+  const handleCopyBackupJson = async () => {
+    if (!exportedBackupData) return;
+    try {
+      await navigator.clipboard.writeText(exportedBackupData.json);
+      setCopiedBackupJson(true);
+      setImportStatus('Encrypted backup JSON copied to clipboard! Paste it into Notes, Telegram, or Google Drive.');
+      setTimeout(() => setCopiedBackupJson(false), 2500);
+    } catch {
+      setImportStatus('Select and copy the encrypted JSON text below.');
+    }
+  };
+
+  const processIncomingBackupText = async (rawText: string) => {
+    const trimmed = rawText.trim();
+    if (!trimmed) return;
+    const immediateOk = await onImportBackup(trimmed);
+    if (immediateOk) {
+      setImportStatus('Encrypted backup decrypted and restored into your vault!');
+      setShowPasteRestoreModal(false);
+      setPastedBackupText('');
+      setPendingBackupJson(null);
+    } else {
+      setPendingBackupJson(trimmed);
+      setShowPasteRestoreModal(false);
+      setImportStatus('Backup file loaded! Enter the Master Passphrase used when creating this backup to decrypt it.');
+    }
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -143,17 +238,16 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
     reader.onload = async (event) => {
       const text = event.target?.result as string;
       if (!text) return;
-      // Try decrypting with active session key first, else prompt for backup passphrase
-      const immediateOk = await onImportBackup(text);
-      if (immediateOk) {
-        setImportStatus('Encrypted backup decrypted and restored!');
-      } else {
-        setPendingBackupJson(text);
-        setImportStatus('Enter the Master Passphrase used when creating this backup file.');
-      }
+      await processIncomingBackupText(text);
     };
     reader.readAsText(file);
     e.target.value = '';
+  };
+
+  const handlePasteRestoreSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pastedBackupText.trim()) return;
+    await processIncomingBackupText(pastedBackupText);
   };
 
   const handleConfirmBackupRestore = async (e: React.FormEvent) => {
@@ -177,17 +271,47 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
   const handleGoogleSignIn = async () => {
     try {
       const user = await signInWithGoogleForVault();
-      const channel = `vault-${user.uid.slice(0, 12).toLowerCase()}`;
-      if (!syncIdInput) setSyncIdInput(channel);
-      setSyncFeedback(`Signed in as ${user.email}. Ready for permanent Firestore Cloud Sync!`);
+      const identity = getLinkedCloudIdentity();
+      setLinkedIdentity(identity);
+      const channel = identity?.vaultChannelId || `vault-${user.uid.slice(0, 12).toLowerCase()}`;
+      setSyncIdInput(channel);
+      onUpdateSecurityConfig({ ...securityConfig, syncVaultId: channel });
+      setSyncFeedback(`Connected as ${user.email}. Ready for permanent Firestore Cloud Sync!`);
     } catch (err: any) {
-      setSyncFeedback(err.message || 'Google Sign-In cancelled.');
+      if (
+        err?.code === 'auth/standalone-apk-direct-bind' ||
+        err?.message === 'STANDALONE_APK_DIRECT_BIND'
+      ) {
+        setShowDirectEmailBind(true);
+        setSyncFeedback(null);
+        return;
+      }
+      setShowDirectEmailBind(true);
+    }
+  };
+
+  const handleDirectEmailBindSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const identity = bindDirectCloudIdentity(directEmailInput);
+      setLinkedIdentity(identity);
+      setSyncIdInput(identity.vaultChannelId);
+      onUpdateSecurityConfig({ ...securityConfig, syncVaultId: identity.vaultChannelId });
+      setShowDirectEmailBind(false);
+      setDirectEmailInput('');
+      setSyncFeedback(
+        `Google Identity (${identity.email}) bound directly to Firestore Channel "${identity.vaultChannelId}"!`
+      );
+    } catch (err: any) {
+      setSyncFeedback(err.message || 'Please enter a valid email address.');
     }
   };
 
   const handleGoogleSignOut = async () => {
     await signOutFromVaultCloud();
-    setSyncFeedback('Signed out of Google Cloud session.');
+    setLinkedIdentity(null);
+    setShowDirectEmailBind(false);
+    setSyncFeedback('Unlinked Google Cloud identity from this device.');
   };
 
   const handleCloudPush = async () => {
@@ -260,6 +384,8 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
       setPinSetupNotice(err.message || 'Failed to configure Quick PIN.');
     }
   };
+
+  const activeIdentityEmail = firebaseUser?.email || linkedIdentity?.email || null;
 
   return (
     <div className="space-y-6 pb-20">
@@ -390,83 +516,129 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
         </div>
 
         <p className="text-xs text-slate-400">
-          Your encrypted vault (Accounts, Cards, API Keys &amp; Secrets, and Ledger) is backed by permanent <strong>Firebase Firestore</strong> storage. Only AES-256-GCM ciphertext is stored in the cloud—your Master Passphrase never leaves your device.
+          Your encrypted vault (Accounts, Cards, API Keys &amp; Secrets, and Ledger) syncs directly with permanent <strong>Firebase Firestore</strong> storage across your Android phone and PC. Only AES-256-GCM ciphertext is stored in the cloud—your Master Passphrase never leaves your device.
         </p>
 
-        {/* Optional Google Account Identity Binding */}
-        <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-xs">
-            <UserCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-            {firebaseUser ? (
-              <div>
-                <p className="font-semibold text-slate-200">
-                  Linked Google Cloud Identity: <span className="text-emerald-400">{firebaseUser.email}</span>
-                </p>
-                <p className="text-[10px] text-slate-400 font-mono">
-                  UID Vault: /user_vaults/{firebaseUser.uid.slice(0, 10)}...
-                </p>
-              </div>
+        {/* Google Account / Cloud Identity Binding (Works natively in Standalone APK without Chrome unauthorized-domain error!) */}
+        <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 text-xs">
+              <UserCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+              {activeIdentityEmail ? (
+                <div>
+                  <p className="font-semibold text-slate-200">
+                    Linked Google Cloud Identity:{' '}
+                    <span className="text-emerald-400 font-mono">{activeIdentityEmail}</span>
+                  </p>
+                  <p className="text-[10px] text-slate-400 font-mono">
+                    Firestore Channel: /vault_sync/{syncIdInput || linkedIdentity?.vaultChannelId}
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <p className="font-semibold text-slate-200">Bind Google Account / Cloud Identity</p>
+                  <p className="text-[10px] text-slate-400">
+                    Link your Google email to automatically generate your personal Firestore Sync Vault ID
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {activeIdentityEmail ? (
+              <button
+                type="button"
+                onClick={handleGoogleSignOut}
+                className="px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[11px] font-medium text-slate-300 flex items-center gap-1.5"
+              >
+                <LogOut className="w-3.5 h-3.5 text-rose-400" />
+                <span>Unlink</span>
+              </button>
             ) : (
-              <div>
-                <p className="font-semibold text-slate-200">Optional: Bind to Google Account</p>
-                <p className="text-[10px] text-slate-400">
-                  Sign in with Google to bind your encrypted Firestore backup to your verified Google UID
-                </p>
-              </div>
+              <button
+                type="button"
+                onClick={handleGoogleSignIn}
+                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                <span>Connect Google Account</span>
+              </button>
             )}
           </div>
 
-          {firebaseUser ? (
-            <button
-              type="button"
-              onClick={handleGoogleSignOut}
-              className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[11px] font-medium text-slate-300 flex items-center gap-1.5"
+          {showDirectEmailBind && !activeIdentityEmail && (
+            <form
+              onSubmit={handleDirectEmailBindSubmit}
+              className="pt-3 border-t border-slate-800/80 space-y-2.5 animate-fade-in"
             >
-              <LogOut className="w-3.5 h-3.5 text-rose-400" />
-              <span>Sign Out</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={handleGoogleSignIn}
-              className="px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-[11px] font-semibold text-emerald-300 flex items-center gap-1.5"
-            >
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Connect Google Account</span>
-            </button>
+              <div className="flex items-start gap-2 text-[11px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 p-2.5 rounded-xl">
+                <Mail className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                <span>
+                  <strong>Standalone Android App Direct Binding:</strong> Enter your Google email below to bind your personal Firestore Cloud Vault directly inside the app (no Chrome browser redirect needed).
+                </span>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="email"
+                  required
+                  value={directEmailInput}
+                  onChange={(e) => setDirectEmailInput(e.target.value)}
+                  placeholder="Enter your Google email (e.g. yourname@gmail.com)"
+                  className="w-full sm:flex-1 h-11 min-h-[44px] px-3.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    className="flex-1 sm:flex-initial h-11 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold"
+                  >
+                    Bind Identity
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowDirectEmailBind(false)}
+                    className="h-11 px-3 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-400"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </form>
           )}
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-2.5">
+        {/* Full-Width Tall Sync Vault ID Input & Action Buttons */}
+        <div className="space-y-2.5">
+          <label className="block text-xs font-semibold text-slate-300">
+            Unique Sync Vault ID (Use this same ID on your Phone &amp; PC to sync):
+          </label>
           <input
             type="text"
             value={syncIdInput}
             onChange={(e) => setSyncIdInput(e.target.value)}
-            placeholder="Enter a unique Sync Vault ID (e.g. krypton-abebe-2026)"
-            className="flex-1 h-11 px-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+            placeholder="e.g. krypton-abebe-2026 or vault-yourname-gmail-com"
+            className="w-full h-12 min-h-[48px] px-4 py-3 rounded-xl bg-slate-950 border border-slate-700 text-sm font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
           />
-          <div className="flex gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
             <button
               type="button"
               onClick={handleCloudPush}
               disabled={isSyncing}
-              className="h-11 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+              className="h-12 min-h-[48px] px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-50 shadow-md shadow-emerald-950/50"
             >
               {isSyncing ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
                 <CloudUpload className="w-4 h-4" />
               )}
-              <span>Push to Firestore</span>
+              <span>Push Encrypted Vault to Firestore</span>
             </button>
             <button
               type="button"
               onClick={() => handleCloudPull()}
               disabled={isSyncing}
-              className="h-11 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+              className="h-12 min-h-[48px] px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
             >
               <CloudDownload className="w-4 h-4 text-cyan-400" />
-              <span>Pull from Firestore</span>
+              <span>Pull Encrypted Vault from Firestore</span>
             </button>
           </div>
         </div>
@@ -479,28 +651,28 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
             <label className="block text-xs font-medium text-slate-200">
               Enter Master Passphrase for Cloud Vault <span className="font-mono text-emerald-400">{syncIdInput}</span>:
             </label>
-            <div className="flex gap-2">
+            <div className="flex flex-col sm:flex-row gap-2">
               <input
                 type="password"
                 required
                 value={syncPassphraseInput}
                 onChange={(e) => setSyncPassphraseInput(e.target.value)}
                 placeholder="Master Passphrase used when pushing..."
-                className="flex-1 h-10 px-3 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                className="w-full sm:flex-1 h-11 min-h-[44px] px-3.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
               />
               <button
                 type="submit"
                 disabled={isSyncing}
-                className="px-4 h-10 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold"
+                className="px-4 h-11 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold"
               >
-                Decrypt & Restore
+                Decrypt &amp; Restore
               </button>
             </div>
           </form>
         )}
 
         {syncFeedback && (
-          <p className="text-xs text-emerald-400 font-medium p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
+          <p className="text-xs text-emerald-400 font-medium p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
             {syncFeedback}
           </p>
         )}
@@ -512,7 +684,7 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
           <div className="flex items-center gap-2">
             <Fingerprint className="w-4 h-4 text-emerald-400" />
             <h4 className="text-xs font-bold text-slate-200 font-mono">
-              6-Digit Keypad PIN & Hardware Biometrics
+              6-Digit Keypad PIN &amp; Hardware Biometrics
             </h4>
           </div>
           <button
@@ -591,7 +763,7 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
                   value={newQuickPin}
                   onChange={(e) => setNewQuickPin(e.target.value.replace(/\D/g, ''))}
                   placeholder="6 digits (e.g. 482910)"
-                  className="w-full h-10 px-3 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono tracking-widest text-slate-100 focus:outline-none focus:border-emerald-500"
+                  className="w-full h-11 px-3 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono tracking-widest text-slate-100 focus:outline-none focus:border-emerald-500"
                 />
               </div>
               <div>
@@ -604,16 +776,16 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
                   value={currentMasterForPin}
                   onChange={(e) => setCurrentMasterForPin(e.target.value)}
                   placeholder="Enter Master Passphrase to wrap key..."
-                  className="w-full h-10 px-3 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                  className="w-full h-11 px-3 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
                 />
               </div>
             </div>
             <div className="flex justify-end">
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold"
+                className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold"
               >
-                Save Quick PIN & Pair Biometrics
+                Save Quick PIN &amp; Pair Biometrics
               </button>
             </div>
           </form>
@@ -629,7 +801,7 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
         <div className="flex items-center gap-2">
           <Clock className="w-4 h-4 text-emerald-400" />
           <h4 className="text-xs font-bold text-slate-200 font-mono">
-            Auto-Lock & Screen-Blur Privacy Protection
+            Auto-Lock &amp; Screen-Blur Privacy Protection
           </h4>
         </div>
 
@@ -645,9 +817,9 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
                 onClick={() =>
                   onUpdateSecurityConfig({ ...securityConfig, autoLockMinutes: mins })
                 }
-                className={`py-2 px-3 rounded-xl text-xs font-semibold font-mono transition-all ${
+                className={`py-2.5 px-3 rounded-xl text-xs font-semibold font-mono transition-all ${
                   securityConfig.autoLockMinutes === mins
-                    ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950'
+                    ? 'bg-emerald-600 text-white border border-emerald-500 shadow-md shadow-emerald-950/40'
                     : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
@@ -657,55 +829,93 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
           </div>
         </div>
 
-        {/* Screen Blur on App Switch */}
-        <div className="flex items-center justify-between pt-3 border-t border-slate-800/80">
-          <div className="pr-3">
+        {/* Screen Blur on App Switch — Explicit High-Contrast Toggle Button (Works in Light & Dark Mode) */}
+        <div className="flex items-center justify-between pt-3 border-t border-slate-800/80 gap-3">
+          <div className="pr-2">
             <p className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
-              <EyeOff className="w-3.5 h-3.5 text-emerald-400" />
-              Screen-Blur Privacy Shield (Anti-Screenshot / App Switcher)
+              <EyeOff className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <span>Screen-Blur Privacy Shield (Anti-Screenshot / App Switcher)</span>
             </p>
-            <p className="text-[10px] text-slate-400">
+            <p className="text-[10px] text-slate-400 mt-0.5">
               Blurs the viewport immediately when switching tabs or minimizing the app on Android/Web
             </p>
           </div>
-          <label className="relative inline-flex items-center cursor-pointer shrink-0">
-            <input
-              type="checkbox"
-              checked={securityConfig.hideScreenOnSwitch}
-              onChange={(e) =>
-                onUpdateSecurityConfig({
-                  ...securityConfig,
-                  hideScreenOnSwitch: e.target.checked,
-                })
-              }
-              className="sr-only peer"
-            />
-            <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-          </label>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={securityConfig.hideScreenOnSwitch}
+            onClick={() =>
+              onUpdateSecurityConfig({
+                ...securityConfig,
+                hideScreenOnSwitch: !securityConfig.hideScreenOnSwitch,
+              })
+            }
+            className="flex items-center gap-2 shrink-0 min-h-[44px] px-1 focus:outline-none"
+          >
+            <span
+              className={`text-[10px] font-mono font-bold ${
+                securityConfig.hideScreenOnSwitch ? 'text-emerald-400' : 'text-slate-400'
+              }`}
+            >
+              {securityConfig.hideScreenOnSwitch ? 'ON' : 'OFF'}
+            </span>
+            <div
+              className={`relative w-12 h-7 rounded-full border transition-colors flex items-center ${
+                securityConfig.hideScreenOnSwitch
+                  ? 'toggle-switch-on bg-emerald-600 border-emerald-500'
+                  : 'toggle-switch-off bg-slate-700 border-slate-600'
+              }`}
+            >
+              <span
+                className={`inline-block w-5 h-5 rounded-full bg-white shadow-md transform transition-transform ${
+                  securityConfig.hideScreenOnSwitch ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </div>
+          </button>
         </div>
 
-        {/* Lock on Tab Switch */}
-        <div className="flex items-center justify-between pt-3 border-t border-slate-800/80">
-          <div className="pr-3">
+        {/* Lock on Tab Switch — Explicit High-Contrast Toggle Button (Works in Light & Dark Mode) */}
+        <div className="flex items-center justify-between pt-3 border-t border-slate-800/80 gap-3">
+          <div className="pr-2">
             <p className="text-xs font-semibold text-slate-200">Strict Lock On Tab Switch</p>
-            <p className="text-[10px] text-slate-400">
+            <p className="text-[10px] text-slate-400 mt-0.5">
               Require Master Passphrase / PIN immediately if the app window loses focus
             </p>
           </div>
-          <label className="relative inline-flex items-center cursor-pointer shrink-0">
-            <input
-              type="checkbox"
-              checked={securityConfig.lockOnTabSwitch}
-              onChange={(e) =>
-                onUpdateSecurityConfig({
-                  ...securityConfig,
-                  lockOnTabSwitch: e.target.checked,
-                })
-              }
-              className="sr-only peer"
-            />
-            <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-          </label>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={securityConfig.lockOnTabSwitch}
+            onClick={() =>
+              onUpdateSecurityConfig({
+                ...securityConfig,
+                lockOnTabSwitch: !securityConfig.lockOnTabSwitch,
+              })
+            }
+            className="flex items-center gap-2 shrink-0 min-h-[44px] px-1 focus:outline-none"
+          >
+            <span
+              className={`text-[10px] font-mono font-bold ${
+                securityConfig.lockOnTabSwitch ? 'text-emerald-400' : 'text-slate-400'
+              }`}
+            >
+              {securityConfig.lockOnTabSwitch ? 'ON' : 'OFF'}
+            </span>
+            <div
+              className={`relative w-12 h-7 rounded-full border transition-colors flex items-center ${
+                securityConfig.lockOnTabSwitch
+                  ? 'toggle-switch-on bg-emerald-600 border-emerald-500'
+                  : 'toggle-switch-off bg-slate-700 border-slate-600'
+              }`}
+            >
+              <span
+                className={`inline-block w-5 h-5 rounded-full bg-white shadow-md transform transition-transform ${
+                  securityConfig.lockOnTabSwitch ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </div>
+          </button>
         </div>
       </div>
 
@@ -714,29 +924,58 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
         <div className="flex items-center gap-2">
           <FileKey className="w-4 h-4 text-emerald-400" />
           <h4 className="text-xs font-bold text-slate-200 font-mono">
-            Offline File Backup & Demo Sandbox
+            Offline File Backup &amp; Demo Sandbox
           </h4>
         </div>
-        <p className="text-xs text-slate-400">
-          Export your entire vault as an AES-256-GCM encrypted JSON file, restore from an existing backup file, or load sample accounts for testing.
-        </p>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+        {/* How They Differ Guide */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-[11px]">
+          <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+            <p className="font-bold text-emerald-400 flex items-center gap-1.5">
+              <CloudUpload className="w-3.5 h-3.5 shrink-0" />
+              <span>1. Cloud Sync (Above)</span>
+            </p>
+            <p className="text-slate-400">
+              Syncs your encrypted vault online via <strong>Firebase Firestore</strong> using your Sync Vault ID so your Phone and PC stay updated over the internet.
+            </p>
+          </div>
+          <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+            <p className="font-bold text-cyan-400 flex items-center gap-1.5">
+              <FileKey className="w-3.5 h-3.5 shrink-0" />
+              <span>2. Offline File Backup</span>
+            </p>
+            <p className="text-slate-400">
+              Exports a standalone AES-256-GCM <code>.json</code> file or text bundle you can save to your phone Downloads, Google Drive, Telegram, or USB drive with zero internet dependency.
+            </p>
+          </div>
+          <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+            <p className="font-bold text-amber-400 flex items-center gap-1.5">
+              <Database className="w-3.5 h-3.5 shrink-0" />
+              <span>3. Demo Sandbox</span>
+            </p>
+            <p className="text-slate-400">
+              Loads sample Ethiopian bank accounts, wallets, and test API keys to explore features safely—and lets you delete all demo data in one tap.
+            </p>
+          </div>
+        </div>
+
+        {/* Primary Backup & Sandbox Action Buttons */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-1">
           <button
             type="button"
-            onClick={onExportBackup}
-            className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 text-xs font-semibold transition-colors"
+            onClick={handleTriggerExport}
+            className="h-12 min-h-[48px] flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-colors shadow-sm"
           >
-            <Download className="w-4 h-4 text-emerald-400" />
+            <Download className="w-4 h-4" />
             <span>{t.emergencyExport}</span>
           </button>
 
-          <label className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 text-xs font-semibold transition-colors cursor-pointer">
+          <label className="h-12 min-h-[48px] flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 text-xs font-semibold transition-colors cursor-pointer">
             <Upload className="w-4 h-4 text-cyan-400" />
-            <span>{t.importVault}</span>
+            <span>Restore from .JSON File</span>
             <input
               type="file"
-              accept=".json"
+              accept=".json,application/json,text/plain"
               onChange={handleFileChange}
               className="hidden"
             />
@@ -744,13 +983,130 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
 
           <button
             type="button"
-            onClick={onLoadDemoAccounts}
-            className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 text-xs font-semibold transition-colors"
+            onClick={() => {
+              setShowPasteRestoreModal(!showPasteRestoreModal);
+              setExportedBackupData(null);
+            }}
+            className="h-12 min-h-[48px] flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 text-xs font-semibold transition-colors"
           >
-            <Database className="w-4 h-4 text-amber-400" />
-            <span>Load Demo Accounts</span>
+            <ClipboardPaste className="w-4 h-4 text-emerald-400" />
+            <span>Paste Backup Text</span>
           </button>
+
+          {hasDemoData && onClearDemoData ? (
+            <button
+              type="button"
+              onClick={onClearDemoData}
+              className="h-12 min-h-[48px] flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-300 text-xs font-semibold transition-colors"
+            >
+              <Trash2 className="w-4 h-4 text-rose-400" />
+              <span>Delete All Demo Data</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onLoadDemoAccounts}
+              className="h-12 min-h-[48px] flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 text-xs font-semibold transition-colors"
+            >
+              <Database className="w-4 h-4 text-amber-400" />
+              <span>Load Demo Accounts</span>
+            </button>
+          )}
         </div>
+
+        {/* Exported Backup Ready Panel (Works 100% on Android Standalone APK & Web!) */}
+        {exportedBackupData && (
+          <div className="p-4 rounded-2xl bg-slate-950 border border-emerald-500/40 space-y-3 animate-fade-in">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="text-xs font-bold text-slate-100 font-mono">
+                  AES-256-GCM Encrypted Backup Ready ({exportedBackupData.filename})
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExportedBackupData(null)}
+                className="text-xs text-slate-400 hover:text-slate-200 px-2 py-1"
+              >
+                Close
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              On your Android phone, tap <strong>Share / Save to Phone</strong> to save the <code>.json</code> file to your Downloads, Google Drive, or Telegram, or tap <strong>Copy Encrypted Backup Text</strong>.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleNativeShareBackup}
+                className="h-11 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-2 shadow-sm"
+              >
+                <Share2 className="w-4 h-4" />
+                <span>Share / Save to Phone</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleCopyBackupJson}
+                className="h-11 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2"
+              >
+                {copiedBackupJson ? (
+                  <Check className="w-4 h-4 text-emerald-400" />
+                ) : (
+                  <Copy className="w-4 h-4 text-cyan-400" />
+                )}
+                <span>{copiedBackupJson ? 'Copied Encrypted JSON!' : 'Copy Encrypted Backup Text'}</span>
+              </button>
+            </div>
+            <textarea
+              readOnly
+              value={exportedBackupData.json}
+              rows={4}
+              onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+              className="w-full p-3 rounded-xl bg-slate-900 border border-slate-800 text-[10px] font-mono text-slate-300 focus:outline-none"
+            />
+          </div>
+        )}
+
+        {/* Paste Encrypted Backup Text Modal/Drawer for Android & Web Restore */}
+        {showPasteRestoreModal && (
+          <form
+            onSubmit={handlePasteRestoreSubmit}
+            className="p-4 rounded-2xl bg-slate-950 border border-cyan-500/40 space-y-3 animate-fade-in"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                <ClipboardPaste className="w-4 h-4 text-cyan-400" />
+                <span>Restore from Pasted Encrypted Backup JSON</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowPasteRestoreModal(false)}
+                className="text-xs text-slate-400 hover:text-slate-200"
+              >
+                Cancel
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Paste the entire AES-256-GCM JSON backup text that you previously exported or copied:
+            </p>
+            <textarea
+              required
+              rows={4}
+              value={pastedBackupText}
+              onChange={(e) => setPastedBackupText(e.target.value)}
+              placeholder='{"version":2,"cipher":"AES-256-GCM","salt":"...","iv":"...","ciphertext":"..."}'
+              className="w-full p-3 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="submit"
+                className="h-11 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold"
+              >
+                Verify &amp; Restore Backup
+              </button>
+            </div>
+          </form>
+        )}
 
         {/* Passphrase Prompt Modal when restoring a backup encrypted with a different passphrase */}
         {pendingBackupJson && (
@@ -762,38 +1118,41 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
               Decrypt Backup File
             </p>
             <p className="text-[11px] text-slate-400">
-              Enter the Master Passphrase that was active when this backup file was exported:
+              Enter the Master Passphrase that was active when this backup was exported:
             </p>
-            <div className="flex gap-2">
+            <div className="flex flex-col sm:flex-row gap-2">
               <input
                 type="password"
                 required
                 value={backupPassphraseInput}
                 onChange={(e) => setBackupPassphraseInput(e.target.value)}
                 placeholder="Backup Master Passphrase..."
-                className="flex-1 h-10 px-3 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
+                className="w-full sm:flex-1 h-11 min-h-[44px] px-3.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-emerald-500"
               />
-              <button
-                type="submit"
-                disabled={isRestoring}
-                className="px-4 h-10 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold"
-              >
-                {isRestoring ? 'Decrypting...' : 'Unlock Backup'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setPendingBackupJson(null)}
-                className="px-3 h-10 rounded-xl border border-slate-700 text-xs text-slate-400"
-              >
-                Cancel
-              </button>
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={isRestoring}
+                  className="flex-1 sm:flex-initial px-4 h-11 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold"
+                >
+                  {isRestoring ? 'Decrypting...' : 'Unlock Backup'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingBackupJson(null)}
+                  className="px-3 h-11 rounded-xl border border-slate-700 text-xs text-slate-400"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           </form>
         )}
 
         {importStatus && (
-          <p className="text-xs text-emerald-400 font-medium p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-center">
-            {importStatus}
+          <p className="text-xs text-emerald-400 font-medium p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center gap-2">
+            <Info className="w-4 h-4 shrink-0" />
+            <span>{importStatus}</span>
           </p>
         )}
       </div>
@@ -811,7 +1170,7 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
             type="button"
             onClick={() => {
               navigator.clipboard?.writeText(
-                'npm install @capacitor/core @capacitor/cli @capacitor/android && npx cap add android && npm run android:sync && npm run android:open'
+                'npm run android:sync'
               );
               setCopiedCapCmd(true);
               setTimeout(() => setCopiedCapCmd(false), 2000);
@@ -819,17 +1178,12 @@ export const SecurityAuditView: React.FC<SecurityAuditViewProps> = ({
             className="text-[11px] font-mono text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
           >
             {copiedCapCmd ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-            <span>{copiedCapCmd ? 'Copied CLI' : 'Copy Build Command'}</span>
+            <span>{copiedCapCmd ? 'Copied CLI' : 'Copy Sync Command'}</span>
           </button>
         </div>
         <p className="text-xs text-slate-400">
           Configured in <code className="text-emerald-300 font-mono">capacitor.config.ts</code> with App ID <code className="text-slate-300 font-mono">com.kryptonvault.zeroknowledge</code>, <code className="text-slate-300 font-mono">FLAG_SECURE</code> screenshot blocking, and Android Hardware Biometric Keystore.
         </p>
-        <div className="text-[11px] text-slate-400 space-y-1 font-mono bg-slate-950 p-3 rounded-xl border border-slate-800/80">
-          <p>1. npm install @capacitor/core @capacitor/cli @capacitor/android</p>
-          <p>2. npx cap add android</p>
-          <p>3. npm run android:sync &amp;&amp; npm run android:open</p>
-        </div>
       </div>
     </div>
   );

@@ -110,16 +110,103 @@ export function sanitizeSyncChannelId(rawId: string): string {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
     .slice(0, 128);
 }
 
+const STORAGE_KEY_LINKED_IDENTITY = 'krypton_linked_cloud_identity_v1';
+
+export interface LinkedCloudIdentity {
+  email: string;
+  vaultChannelId: string;
+  linkedAt: string;
+  mode: 'google-oauth' | 'direct-apk-identity';
+}
+
+export function isStandaloneAndroidWebView(): boolean {
+  if (typeof window === 'undefined') return false;
+  const cap = (window as any).Capacitor;
+  if (cap && typeof cap.isNativePlatform === 'function' && cap.isNativePlatform()) {
+    return true;
+  }
+  const isLocalhostWithoutDevPort =
+    (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
+    window.location.port !== '3000';
+  const isAndroidWv = typeof navigator !== 'undefined' && /;\s*wv\)/i.test(navigator.userAgent);
+  return window.location.protocol === 'capacitor:' || isLocalhostWithoutDevPort || isAndroidWv;
+}
+
+export function getLinkedCloudIdentity(): LinkedCloudIdentity | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_LINKED_IDENTITY);
+    if (!raw) return null;
+    return JSON.parse(raw) as LinkedCloudIdentity;
+  } catch {
+    return null;
+  }
+}
+
+export function bindDirectCloudIdentity(email: string): LinkedCloudIdentity {
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    throw new Error('Please enter a valid Google email address (e.g. name@gmail.com).');
+  }
+  const vaultChannelId = sanitizeSyncChannelId(`vault-${cleanEmail}`);
+  const identity: LinkedCloudIdentity = {
+    email: cleanEmail,
+    vaultChannelId,
+    linkedAt: new Date().toISOString(),
+    mode: 'direct-apk-identity',
+  };
+  localStorage.setItem(STORAGE_KEY_LINKED_IDENTITY, JSON.stringify(identity));
+  return identity;
+}
+
 export async function signInWithGoogleForVault(): Promise<User> {
-  const credential = await signInWithPopup(auth, googleProvider);
-  return credential.user;
+  if (isStandaloneAndroidWebView()) {
+    const err = new Error('STANDALONE_APK_DIRECT_BIND');
+    (err as any).code = 'auth/standalone-apk-direct-bind';
+    throw err;
+  }
+  try {
+    const credential = await signInWithPopup(auth, googleProvider);
+    if (credential.user?.email) {
+      const vaultChannelId = sanitizeSyncChannelId(`vault-${credential.user.email}`);
+      localStorage.setItem(
+        STORAGE_KEY_LINKED_IDENTITY,
+        JSON.stringify({
+          email: credential.user.email,
+          vaultChannelId,
+          linkedAt: new Date().toISOString(),
+          mode: 'google-oauth',
+        } satisfies LinkedCloudIdentity)
+      );
+    }
+    return credential.user;
+  } catch (error: any) {
+    const code = String(error?.code || '');
+    const msg = String(error?.message || '');
+    if (
+      code.includes('unauthorized-domain') ||
+      code.includes('operation-not-supported') ||
+      msg.includes('unauthorized-domain')
+    ) {
+      const fallbackErr = new Error('STANDALONE_APK_DIRECT_BIND');
+      (fallbackErr as any).code = 'auth/standalone-apk-direct-bind';
+      throw fallbackErr;
+    }
+    throw error;
+  }
 }
 
 export async function signOutFromVaultCloud(): Promise<void> {
-  await signOut(auth);
+  localStorage.removeItem(STORAGE_KEY_LINKED_IDENTITY);
+  try {
+    await signOut(auth);
+  } catch {
+    // Ignore if not signed in via Firebase Web popup
+  }
 }
 
 export { onAuthStateChanged };

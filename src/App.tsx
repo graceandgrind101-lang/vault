@@ -35,10 +35,12 @@ import {
 } from './types/secret';
 import { INITIAL_SEED_ACCOUNTS } from './utils/seedData';
 import {
+  DEMO_SECRET_IDS,
   createDemoSecretItems,
   evaluateSecretUrgency,
   toMetadataProjection,
 } from './utils/secretHelpers';
+import { Trash2 } from 'lucide-react';
 import { safeSearchAccounts, formatCurrency } from './utils/validator';
 import { translations } from './utils/i18n';
 import {
@@ -611,6 +613,31 @@ export default function App() {
     showToast('Sample SaaS API Keys & Secrets encrypted into vault.');
   };
 
+  const seedAccountIds = useMemo(() => new Set(INITIAL_SEED_ACCOUNTS.map((a) => a.id)), []);
+  const demoAccountsCount = useMemo(
+    () => accounts.filter((a) => seedAccountIds.has(a.id)).length,
+    [accounts, seedAccountIds]
+  );
+  const demoSecretsCount = useMemo(
+    () => secrets.filter((s) => DEMO_SECRET_IDS.includes(s.id)).length,
+    [secrets]
+  );
+  const hasDemoData = demoAccountsCount > 0 || demoSecretsCount > 0;
+
+  const handleClearAllDemoData = async () => {
+    if (!masterKey) return;
+    if (demoAccountsCount > 0) {
+      const cleanedAccounts = accounts.filter((a) => !seedAccountIds.has(a.id));
+      await persistEncryptedAccounts(cleanedAccounts, masterKey);
+    }
+    if (demoSecretsCount > 0) {
+      const cleanedSecrets = secrets.filter((s) => !DEMO_SECRET_IDS.includes(s.id));
+      await persistEncryptedSecrets(cleanedSecrets, masterKey);
+      handleLogAudit('delete', 'Demo Sandbox Purge', undefined, 'Deleted all demo accounts and demo API keys');
+    }
+    showToast('All demo accounts and demo API keys have been deleted.');
+  };
+
   // Language switch
   const handleLanguageChange = (lang: SupportedLanguage) => {
     setCurrentLanguage(lang);
@@ -735,10 +762,10 @@ export default function App() {
   };
 
   // Export Encrypted Full Backup (Accounts + Secrets + Audit Logs)
-  const handleExportBackup = async () => {
+  const handleExportBackup = async (): Promise<{ json: string; filename: string } | null> => {
     if (!masterKey || !salt) {
       showToast('Unlock vault first to export.');
-      return;
+      return null;
     }
     try {
       const bundle = {
@@ -747,16 +774,29 @@ export default function App() {
         auditLogs,
       };
       const jsonBackup = await createEncryptedVaultBackup(bundle, masterKey, salt);
-      const blob = new Blob([jsonBackup], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `krypton_vault_backup_${new Date().toISOString().split('T')[0]}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-      showToast('Encrypted vault backup exported safely.');
+      const filename = `krypton_vault_backup_${new Date().toISOString().split('T')[0]}.json`;
+
+      // Trigger standard file download on desktop browsers (ignored harmlessly in Android WebView)
+      try {
+        const blob = new Blob([jsonBackup], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 3000);
+      } catch {
+        // Standalone Android WebView handles export via Share Sheet / Copy Drawer
+      }
+
+      handleLogAudit('copy', 'Offline AES-256-GCM Backup File', undefined, `Exported ${accounts.length} accounts & ${secrets.length} secrets`);
+      showToast('Encrypted vault backup ready to save or share.');
+      return { json: jsonBackup, filename };
     } catch {
       showToast('Backup export failed.');
+      return null;
     }
   };
 
@@ -1507,6 +1547,18 @@ export default function App() {
                   </button>
                 </div>
 
+                {demoAccountsCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearAllDemoData}
+                    className="h-11 px-3.5 rounded-2xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors shrink-0"
+                    title="Remove all sample demo accounts and keys"
+                  >
+                    <Trash2 className="w-4 h-4 text-rose-400" />
+                    <span>Delete Demo ({demoAccountsCount})</span>
+                  </button>
+                )}
+
                 {/* Add New Account Button */}
                 <button
                   type="button"
@@ -1703,6 +1755,8 @@ export default function App() {
               onPushCloudSync={handlePushCloudSync}
               onPullCloudSync={handlePullCloudSync}
               onLoadDemoAccounts={handleLoadDemoAccounts}
+              onClearDemoData={handleClearAllDemoData}
+              hasDemoData={hasDemoData}
               currentLanguage={currentLanguage}
             />
           )}

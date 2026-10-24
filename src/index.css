@@ -71,6 +71,20 @@ body {
   border-color: #cbd5e1 !important;
 }
 
+/* Ensure checked toggles and active emerald buttons always stay vibrant emerald in Light Theme */
+.theme-light .peer:checked ~ .peer-checked\:bg-emerald-600,
+.theme-light .toggle-switch-on,
+.theme-light .bg-emerald-600 {
+  background-color: #059669 !important;
+  border-color: #047857 !important;
+  color: #ffffff !important;
+}
+
+.theme-light .toggle-switch-off {
+  background-color: #cbd5e1 !important;
+  border-color: #94a3b8 !important;
+}
+
 .theme-light .border-slate-800,
 .theme-light .border-slate-800\/90,
 .theme-light .border-slate-800\/80,

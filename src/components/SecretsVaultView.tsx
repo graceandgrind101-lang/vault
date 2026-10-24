@@ -36,6 +36,7 @@ import {
 import {
   DEFAULT_SAAS_PRODUCTS,
   DEFAULT_SAAS_SERVICES,
+  DEMO_SECRET_IDS,
   SECRET_TYPE_LABELS,
   computeNextRotationDue,
   evaluateSecretUrgency,
@@ -145,6 +146,45 @@ export const SecretsVaultView: React.FC<SecretsVaultViewProps> = ({
   const [newTokenLabel, setNewTokenLabel] = useState('');
   const [newlyGeneratedRawToken, setNewlyGeneratedRawToken] = useState<string | null>(null);
   const csvInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Demo Mode visibility preference (allows turning off Demo API keys button)
+  const [demoModeOff, setDemoModeOff] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('krypton_vault_demo_off_v1') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const demoSecretsInVault = useMemo(
+    () => secrets.filter((s) => DEMO_SECRET_IDS.includes(s.id)),
+    [secrets]
+  );
+
+  const handleToggleDemoMode = (off: boolean) => {
+    setDemoModeOff(off);
+    try {
+      localStorage.setItem('krypton_vault_demo_off_v1', off ? 'true' : 'false');
+    } catch {}
+    if (off && demoSecretsInVault.length > 0) {
+      const remaining = secrets.filter((s) => !DEMO_SECRET_IDS.includes(s.id));
+      onUpdateSecrets(remaining);
+      onLogAudit('delete', 'Demo SaaS API Keys Bundle', undefined, `Removed ${demoSecretsInVault.length} sample secrets & turned off demo mode`);
+      showToast(`Deleted ${demoSecretsInVault.length} demo API keys and turned off Demo Mode.`);
+    } else if (off) {
+      showToast('Demo Mode turned off.');
+    } else {
+      showToast('Demo Mode re-enabled.');
+    }
+  };
+
+  const handleDeleteAllDemoSecrets = () => {
+    if (demoSecretsInVault.length === 0) return;
+    const remaining = secrets.filter((s) => !DEMO_SECRET_IDS.includes(s.id));
+    onUpdateSecrets(remaining);
+    onLogAudit('delete', 'Demo SaaS API Keys Bundle', undefined, `Deleted ${demoSecretsInVault.length} sample secrets`);
+    showToast(`Deleted all ${demoSecretsInVault.length} demo API keys.`);
+  };
 
   // Handle deep-link highlighting (/vault/api-keys/<id>)
   useEffect(() => {
@@ -588,32 +628,11 @@ export const SecretsVaultView: React.FC<SecretsVaultViewProps> = ({
       return;
     }
 
-    if (item.status !== 'revoked') {
-      // Soft delete first: set status = 'revoked' and keep history
-      const nowIso = new Date().toISOString();
-      const revokedItem: SecretItem = {
-        ...item,
-        status: 'revoked',
-        rotation_history: [
-          {
-            id: `rot_${Date.now()}`,
-            rotated_at: nowIso,
-            note: 'Key soft-deleted (marked Revoked)',
-          },
-          ...(item.rotation_history || []),
-        ],
-        updated_at: nowIso,
-      };
-      onUpdateSecrets(secrets.map((s) => (s.id === item.id ? revokedItem : s)));
-      onLogAudit('revoke', item.label, item.id, 'Soft-deleted (status set to revoked)');
-      showToast(`"${item.label}" marked as Revoked (history preserved).`);
-    } else {
-      // Permanent delete if already revoked
-      onUpdateSecrets(secrets.filter((s) => s.id !== item.id));
-      onLogAudit('delete', item.label, item.id, 'Permanently purged revoked record');
-      showToast(`"${item.label}" permanently deleted.`);
-      if (inspectingItem?.id === item.id) setInspectingItem(null);
-    }
+    // Permanently delete record on confirmation
+    onUpdateSecrets(secrets.filter((s) => s.id !== item.id));
+    onLogAudit('delete', item.label, item.id, 'Permanently deleted secret record');
+    showToast(`"${item.label}" deleted from vault.`);
+    if (inspectingItem?.id === item.id) setInspectingItem(null);
     setConfirmDeleteId(null);
   };
 
@@ -963,6 +982,30 @@ export const SecretsVaultView: React.FC<SecretsVaultViewProps> = ({
                   <span>JSON</span>
                 </button>
 
+                {demoSecretsInVault.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleDeleteAllDemoSecrets}
+                    className="h-11 px-3.5 rounded-2xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                    title="Delete all sample/demo API keys in one click"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Delete Demo Keys ({demoSecretsInVault.length})</span>
+                  </button>
+                )}
+
+                {!demoModeOff && secrets.length > 0 && demoSecretsInVault.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={onLoadDemoSecrets}
+                    className="h-11 px-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                    title="Load sample SaaS API keys"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Load Demo Keys</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={openCreateModal}
@@ -973,6 +1016,35 @@ export const SecretsVaultView: React.FC<SecretsVaultViewProps> = ({
                 </button>
               </div>
             </div>
+
+            {/* Demo Keys Active Banner with 1-Click Delete & Turn Off */}
+            {demoSecretsInVault.length > 0 && (
+              <div className="p-3 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 text-cyan-200">
+                  <Sparkles className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <span>
+                    <strong>{demoSecretsInVault.length} Demo API Key(s)</strong> currently loaded in your vault for testing.
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleDeleteAllDemoSecrets}
+                    className="px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-300 font-semibold flex items-center gap-1 transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Demo Keys</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleDemoMode(true)}
+                    className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 font-semibold transition-colors"
+                  >
+                    Delete &amp; Turn Off Demo
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Filter Selectors Row */}
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
@@ -1274,7 +1346,7 @@ export const SecretsVaultView: React.FC<SecretsVaultViewProps> = ({
                       </div>
 
                       {/* Mobile Thumb-Friendly Action Row */}
-                      <div className="grid grid-cols-4 gap-2 pt-1">
+                      <div className="grid grid-cols-5 gap-1.5 pt-1">
                         <button
                           type="button"
                           onClick={() => handleTriggerProtectedAction(item, 'reveal')}
@@ -1319,6 +1391,19 @@ export const SecretsVaultView: React.FC<SecretsVaultViewProps> = ({
                           <Edit className="w-3.5 h-3.5" />
                           <span>Edit</span>
                         </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteOrRevoke(item)}
+                          className={`h-10 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1 transition-colors ${
+                            confirmDeleteId === item.id
+                              ? 'bg-rose-600 border-rose-500 text-white'
+                              : 'bg-slate-900 border-slate-800 text-rose-400 hover:bg-rose-500/15'
+                          }`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>{confirmDeleteId === item.id ? 'Sure?' : 'Del'}</span>
+                        </button>
                       </div>
                     </div>
                   );
@@ -1350,14 +1435,32 @@ export const SecretsVaultView: React.FC<SecretsVaultViewProps> = ({
                   <Plus className="w-4 h-4" />
                   <span>Add Your First Key</span>
                 </button>
-                {secrets.length === 0 && (
+                {secrets.length === 0 && !demoModeOff && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={onLoadDemoSecrets}
+                      className="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5"
+                    >
+                      <Sparkles className="w-4 h-4 text-cyan-400" />
+                      <span>Load Sample SaaS Keys</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleDemoMode(true)}
+                      className="px-3 py-2.5 rounded-xl bg-slate-950 hover:bg-slate-900 border border-slate-800 text-slate-400 hover:text-rose-400 text-xs font-semibold transition-colors"
+                    >
+                      Turn Off Demo Option
+                    </button>
+                  </>
+                )}
+                {secrets.length === 0 && demoModeOff && (
                   <button
                     type="button"
-                    onClick={onLoadDemoSecrets}
-                    className="px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5"
+                    onClick={() => handleToggleDemoMode(false)}
+                    className="px-3 py-2 rounded-xl text-[11px] font-mono text-slate-500 hover:text-slate-300 underline"
                   >
-                    <Sparkles className="w-4 h-4 text-cyan-400" />
-                    <span>Load Sample SaaS Keys</span>
+                    Re-enable Demo Keys Loader
                   </button>
                 )}
               </div>

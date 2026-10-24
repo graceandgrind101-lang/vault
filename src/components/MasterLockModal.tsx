@@ -508,19 +508,28 @@ export const MasterLockModal: React.FC<MasterLockModalProps> = ({
           </form>
         )}
 
-        {/* Biometric Unlock Option for Returning Users */}
+        {/* Biometric Unlock Option for Returning Users (Large Touch Target) */}
         {hasExistingMaster && (
-          <div className="mt-4 pt-3.5 border-t border-slate-800 text-center">
+          <div className="mt-5 pt-4 border-t border-slate-800 text-center">
             <button
               type="button"
               onClick={handleBiometricUnlock}
               disabled={isVerifying}
-              className="w-full py-2.5 rounded-xl border border-slate-700 hover:bg-slate-800/80 active:scale-[0.98] text-slate-200 text-xs font-medium flex items-center justify-center gap-2 transition-colors"
+              className="w-full py-4 px-5 rounded-2xl bg-emerald-500/10 hover:bg-emerald-500/20 active:scale-[0.98] border-2 border-emerald-500/40 hover:border-emerald-400 text-slate-100 flex items-center justify-center gap-4 shadow-lg shadow-emerald-950/50 transition-all group disabled:opacity-50"
             >
-              <Fingerprint className="w-4 h-4 text-emerald-400" />
-              <span>
-                {hasBioEnrolled ? t.biometricUnlock : 'Pair & Unlock with Biometrics'}
-              </span>
+              <div className="w-14 h-14 rounded-2xl bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform shadow-inner">
+                <Fingerprint className="w-8 h-8 text-emerald-400" />
+              </div>
+              <div className="text-left">
+                <span className="block text-sm sm:text-base font-bold text-slate-100 group-hover:text-emerald-300 transition-colors">
+                  {hasBioEnrolled ? t.biometricUnlock : 'Pair & Unlock with Biometrics'}
+                </span>
+                <span className="block text-[11px] font-mono text-emerald-400/90 mt-0.5">
+                  {hasBioEnrolled
+                    ? 'Tap sensor to unlock with Fingerprint / Face ID'
+                    : 'Tap to pair hardware fingerprint passkey'}
+                </span>
+              </div>
             </button>
           </div>
         )}
